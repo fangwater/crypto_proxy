@@ -135,7 +135,20 @@ futures Kline/Candlestick Streams 1m
 spot Kline/Candlestick Streams 1m
 
 
+币安现货的最快盘口价格
 
+1、增量深度信息stream
+"U": 157,           // 从上次推送至今新增的第一个 update Id
+"u": 160,           // 从上次推送至今新增的最后一个 update Id
+2、booktiker 
+3、depth5 快照 lastId
+3个速度有差异，不一定哪个更快
+
+depth 的 last --- idx
+book --- idx
+depth --- 分情况u在前，当前行情更新
+
+2、币安合约行情stream
 
 
 

@@ -1,5 +1,9 @@
 #!/bin/bash
 
+#部署脚本
+#cfg在项目根目录的mkt_cfg.yaml
+# 给定多台机器的ip，并指定primary_ip和secondary_ip
+
 # 设置错误时立即退出
 set -e
 
@@ -21,51 +25,77 @@ check_status() {
     fi
 }
 
-#在两台机器上部署行情stream进程的二进制
+# 服务器配置
+# 格式: "IP:角色" (角色: primary 或 secondary)
+SERVERS=(
+    "163.227.14.73:primary"
+    "163.227.14.74:secondary"
+    "163.227.14.75:primary"
+    "163.227.14.76:secondary"
+)
 
-# 1、在当前机器上，编译rust项目，获得stream二进制文件
-log "开始编译项目..."
-cargo build --release -j 2
-check_status "项目编译"
+user=el01
+exec_dir=/home/$user/crypto_mkt
 
-ip_list=(68.64.176.133)
-user=root
-exec_dir=/$user/crypto_mkt
+# 解析服务器配置的函数
+parse_server_config() {
+    local config="$1"
+    local ip="${config%:*}"
+    local role="${config#*:}"
+    echo "$ip $role"
+}
 
-# 检查SSH连接
-log "检查SSH连接..."
-for ip in $primary_ip $secondary_ip; do
+# 检查所有服务器的SSH连接
+log "检查所有服务器的SSH连接..."
+for server_config in "${SERVERS[@]}"; do
+    # 跳过注释行
+    [[ "$server_config" =~ ^[[:space:]]*# ]] && continue
+    
+    read -r ip role <<< $(parse_server_config "$server_config")
+    
+    log "检查服务器 $ip ($role)..."
     ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "echo 'SSH连接成功'" > /dev/null 2>&1
     check_status "SSH连接到 $ip"
-done
-
-# 检查exec_dir目录是否存在
-for ip in $primary_ip $secondary_ip; do
-    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "if [ ! -d $exec_dir ]; then mkdir -p $exec_dir; fi"
+    
+    # 检查exec_dir目录是否存在
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "if [ ! -d $exec_dir ]; then sudo mkdir -p $exec_dir && sudo chown $user:$user $exec_dir; fi"
     check_status "检查目录在 $ip"
 done
 
-# 将mkt_proxy二进制文件拷贝到两台机器上, 并设置权限
-log "开始部署二进制文件..."
-for ip in ${ip_list[@]}; do
-    log "部署到服务器 $ip..."
+# 编译项目
+log "开始编译项目..."
+cargo build --release -j2
+check_status "项目编译"
 
-    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/crypto_proxy $user@$ip:$exec_dir
-    check_status "文件传输到 $ip"
+# 部署二进制文件和脚本
+log "开始部署..."
+
+for server_config in "${SERVERS[@]}"; do
+    # 跳过注释行
+    [[ "$server_config" =~ ^[[:space:]]*# ]] && continue
     
-    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod 755 $exec_dir/crypto_proxy"
-    check_status "设置文件权限在 $ip"
-done
-
-log "开始部署start_proxy.sh和stop_proxy.sh文件..."
-for ip in ${ip_list[@]}; do
-    log "部署到服务器 $ip..."
-    scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir
+    read -r ip role <<< $(parse_server_config "$server_config")
+    
+    log "部署到服务器 $ip ($role)..."
+    
+    # 部署二进制文件
+    scp -o ConnectTimeout=$SSH_TIMEOUT target/release/crypto_proxy $user@$ip:$exec_dir/crypto_proxy
+    check_status "复制二进制文件到 $ip"
+    
+    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/crypto_proxy"
+    check_status "设置 $ip 上的二进制文件权限"
+    
+    # 部署脚本文件
+    scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir/
+    check_status "复制脚本文件到 $ip"
+    
     ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh"
-    check_status "文件传输到 $ip"
+    check_status "设置 $ip 上的脚本文件权限"
+    
+    log "服务器 $ip ($role) 部署完成！"
 done
 
-log "部署完成！"
+log "所有服务器部署完成！"
 
 
 

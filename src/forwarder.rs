@@ -56,9 +56,9 @@ impl ZmqForwarder {
         let ipc_addr = format!("ipc://{}", self.zmq_config.ipc_path);
         let bind_addr = if self.is_primary {
             // 如果proxy的role时primary，tcp发给secondary
-            format!("tcp://{}", self.zmq_config.secondary_addr)
-        } else {
             format!("tcp://{}", self.zmq_config.primary_addr)
+        } else {
+            format!("tcp://{}", self.zmq_config.secondary_addr)
         };
 
         match self.ipc_socket.bind(&ipc_addr) {
