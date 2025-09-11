@@ -341,21 +341,33 @@ impl Config {
         }
     }
 
+    fn remove_leverage_prefix(symbol: &str) -> &str {
+        // 检查常见的倍率前缀
+        let prefixes = ["10000","1000", "100", "10"];
+        for prefix in &prefixes {
+            if symbol.starts_with(prefix) {
+                let rest = &symbol[prefix.len()..];
+                // 确保前缀后面跟着的是字母（避免误匹配数字作为资产名的一部分）
+                if !rest.is_empty() && rest.chars().next().unwrap().is_alphabetic() {
+                    return rest;
+                }
+            }
+        }
+        // 没有倍率前缀，返回原始符号
+        symbol
+    }
     // 添加辅助函数来检查现货符号是否与期货符号匹配
     fn is_spot_symbol_related_to_futures(spot_symbol: &str, futures_symbol: &str) -> bool {
         // 直接匹配
         if spot_symbol == futures_symbol {
             return true;
         }
-        
         // 处理杠杆合约的情况：1000XXXUSDT vs XXXUSDT
-        if futures_symbol.starts_with("1000") && futures_symbol.to_lowercase().ends_with("usdt") {
-            let base_symbol = &futures_symbol[4..]; // 去掉"1000"前缀
-            if spot_symbol == base_symbol {
-                return true;
-            }
-        }
-        false
+        // 去除倍率前缀后比较
+        let spot_normalized = Self::remove_leverage_prefix(spot_symbol);
+        let futures_normalized = Self::remove_leverage_prefix(futures_symbol);
+        
+        spot_normalized == futures_normalized
     }
     // okex-swap 和 okex 的符号特殊，需要特殊处理
     fn is_spot_symbol_related_to_okex_swap(spot_symbol: &str, swap_symbol: &str) -> bool {
