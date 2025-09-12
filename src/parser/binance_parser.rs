@@ -392,12 +392,15 @@ impl Parser for BinanceIncParser {
 
 impl BinanceIncParser {
     fn parse_inc_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+        // 币安现货用E字段，币安合约用T字段
+        // 判断json是否包含T字段，如果有，timestamp用T，否则用E
+        let timestamp_field = if json_value.get("T").is_some() { "T" } else { "E" };
         // 从增量数据中提取信息
-        if let (Some(symbol), Some(first_update_id), Some(final_update_id), Some(event_time), Some(bids_array), Some(asks_array)) = (
+        if let (Some(symbol), Some(first_update_id), Some(final_update_id), Some(timestamp), Some(bids_array), Some(asks_array)) = (
             json_value.get("s").and_then(|v| v.as_str()),
             json_value.get("U").and_then(|v| v.as_i64()),  // first update id
             json_value.get("u").and_then(|v| v.as_i64()),  // final update id
-            json_value.get("E").and_then(|v| v.as_i64()),  // event time
+            json_value.get(timestamp_field).and_then(|v| v.as_i64()),  // timestamp
             json_value.get("b").and_then(|v| v.as_array()), // bids
             json_value.get("a").and_then(|v| v.as_array()), // asks
         ) {
@@ -409,7 +412,7 @@ impl BinanceIncParser {
                 symbol.to_string(),
                 first_update_id,
                 final_update_id,
-                event_time,
+                timestamp,
                 false,  // is_snapshot = false
                 bids_count,
                 asks_count,
