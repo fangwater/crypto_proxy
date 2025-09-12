@@ -455,12 +455,12 @@ impl Parser for BinanceTradeParser {
 impl BinanceTradeParser {
     fn parse_trade_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
         // Extract trade data from Binance trade message
-        if let (Some(symbol), Some(trade_id), Some(price_str), Some(qty_str), Some(event_time), Some(is_maker)) = (
+        if let (Some(symbol), Some(trade_id), Some(price_str), Some(qty_str), Some(trade_time), Some(is_maker)) = (
             json_value.get("s").and_then(|v| v.as_str()),          // 交易对
             json_value.get("t").and_then(|v| v.as_i64()),          // 交易ID
             json_value.get("p").and_then(|v| v.as_str()),          // 成交价格
             json_value.get("q").and_then(|v| v.as_str()),          // 成交数量
-            json_value.get("E").and_then(|v| v.as_i64()),          // 事件时间
+            json_value.get("T").and_then(|v| v.as_i64()),          // 事件时间
             json_value.get("m").and_then(|v| v.as_bool()),         // 买方是否是做市方
         ) {
             // Parse price and quantity
@@ -482,7 +482,7 @@ impl BinanceTradeParser {
                 let trade_msg = TradeMsg::create(
                     symbol.to_string(),
                     trade_id,
-                    event_time,
+                    trade_time,
                     side,
                     price,
                     amount,

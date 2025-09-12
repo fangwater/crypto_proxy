@@ -1,0 +1,8 @@
+{
+    "rust-analyzer.numThreads": 2,
+    "rust-analyzer.cargo.jobs": 1,
+    "rust-analyzer.lruCapacity": 32,
+    "rust-analyzer.checkOnSave.enable": false,
+    "rust-analyzer.cargo.buildScripts.enable": false,
+    "rust-analyzer.procMacro.enable": false
+}
