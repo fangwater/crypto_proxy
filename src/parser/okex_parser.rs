@@ -76,22 +76,24 @@ impl Parser for OkexKlineParser {
                                 }
                                 
                                 // Parse kline data: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
-                                if let (Some(ts_str), Some(o_str), Some(h_str), Some(l_str), Some(c_str), Some(vol_str)) = (
+                                if let (Some(ts_str), Some(o_str), Some(h_str), Some(l_str), Some(c_str), Some(vol_str), Some(vol_ccy_quote_str)) = (
                                     kline_data[0].as_str(),
                                     kline_data[1].as_str(),
                                     kline_data[2].as_str(),
                                     kline_data[3].as_str(),
                                     kline_data[4].as_str(),
                                     kline_data[5].as_str(),
+                                    kline_data[7].as_str(),
                                 ) {
                                     // Parse all values
-                                    if let (Ok(timestamp), Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
+                                    if let (Ok(timestamp), Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume), Ok(turnover)) = (
                                         ts_str.parse::<i64>(),
                                         o_str.parse::<f64>(),
                                         h_str.parse::<f64>(),
                                         l_str.parse::<f64>(),
                                         c_str.parse::<f64>(),
                                         vol_str.parse::<f64>(),
+                                        vol_ccy_quote_str.parse::<f64>(),
                                     ) {
                                         // Create kline message
                                         let kline_msg = KlineMsg::create(
@@ -101,6 +103,7 @@ impl Parser for OkexKlineParser {
                                             low,
                                             close,
                                             volume,
+                                            turnover,
                                             timestamp,
                                         );
                                         

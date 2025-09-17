@@ -68,27 +68,29 @@ impl Parser for BinanceKlineParser {
                         }
                         
                         // 从k对象中提取OHLCV数据
-                        if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(timestamp)) = (
+                        if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(turnover_str), Some(timestamp)) = (
                             kline_obj.get("o").and_then(|v| v.as_str()),
                             kline_obj.get("h").and_then(|v| v.as_str()),
                             kline_obj.get("l").and_then(|v| v.as_str()),
                             kline_obj.get("c").and_then(|v| v.as_str()),
-                            kline_obj.get("v").and_then(|v| v.as_str()),
-                            kline_obj.get("t").and_then(|v| v.as_i64()),
+                            kline_obj.get("v").and_then(|v| v.as_str()), //成交量
+                            kline_obj.get("q").and_then(|v| v.as_str()), //成交额
+                            kline_obj.get("t").and_then(|v| v.as_i64()), 
                         ) {
                             // 只为BTCUSDT打印OHLCV数据
                             if symbol.to_lowercase() == "btcusdt" {
-                                info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, t={}", 
-                                      open_str, high_str, low_str, close_str, volume_str, timestamp);
+                                info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, q={}, t={}", 
+                                      open_str, high_str, low_str, close_str, volume_str, turnover_str, timestamp);
                             }
                             
                             // 解析价格和成交量数据
-                            if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
+                            if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume), Ok(turnover)) = (
                                 open_str.parse::<f64>(),
                                 high_str.parse::<f64>(),
                                 low_str.parse::<f64>(),
                                 close_str.parse::<f64>(),
                                 volume_str.parse::<f64>(),
+                                turnover_str.parse::<f64>(),
                             ) {
                                 // 创建K线消息
                                 let kline_msg = KlineMsg::create(
@@ -98,6 +100,7 @@ impl Parser for BinanceKlineParser {
                                     low,
                                     close,
                                     volume,
+                                    turnover,
                                     timestamp,
                                 );
                                 

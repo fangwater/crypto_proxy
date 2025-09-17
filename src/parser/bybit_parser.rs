@@ -69,21 +69,23 @@ impl Parser for BybitKlineParser {
                                 // 从topic字段提取symbol
                                 if let Some(symbol) = topic.split('.').last() {
                                     // 从kline_data对象中提取OHLCV数据
-                                    if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(timestamp)) = (
+                                    if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(turnover_str),Some(timestamp)) = (
                                         kline_data.get("open").and_then(|v| v.as_str()),
                                         kline_data.get("high").and_then(|v| v.as_str()),
                                         kline_data.get("low").and_then(|v| v.as_str()),
                                         kline_data.get("close").and_then(|v| v.as_str()),
                                         kline_data.get("volume").and_then(|v| v.as_str()),
+                                        kline_data.get("turnover").and_then(|v| v.as_str()),
                                         kline_data.get("timestamp").and_then(|v| v.as_i64()),
                                     ) {
                                         // 解析价格和成交量数据
-                                        if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume)) = (
+                                        if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume), Ok(turnover)) = (
                                             open_str.parse::<f64>(),
                                             high_str.parse::<f64>(),
                                             low_str.parse::<f64>(),
                                             close_str.parse::<f64>(),
                                             volume_str.parse::<f64>(),
+                                            turnover_str.parse::<f64>(),
                                         ) {
                                             // 将真实时间转换为opentime
                                             let closed_timestamp = (timestamp / 60000 - 1) * 60000;
@@ -96,6 +98,7 @@ impl Parser for BybitKlineParser {
                                                 low,
                                                 close,
                                                 volume,
+                                                turnover,
                                                 closed_timestamp,
                                             );
                                             

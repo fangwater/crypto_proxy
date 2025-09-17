@@ -45,6 +45,7 @@ pub struct KlineMsg {
     pub low_price: f64,
     pub close_price: f64,
     pub volume: f64,
+    pub turnover : f64,
     pub timestamp: i64,
 }
 
@@ -362,6 +363,7 @@ impl KlineMsg {
         low_price: f64,
         close_price: f64,
         volume: f64,
+        turnover : f64,
         timestamp: i64,
     ) -> Self {
         let symbol_length = symbol.len() as u32;
@@ -374,14 +376,15 @@ impl KlineMsg {
             low_price,
             close_price,
             volume,
+            turnover,
             timestamp,
         }
     }
 
     /// Convert message to bytes
     pub fn to_bytes(&self) -> Bytes {
-        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 5*f64(8*5) + timestamp(8)
-        let total_size = 4 + 4 + self.symbol_length as usize + 5 * 8 + 8;
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 6*f64(8*6) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 6 * 8 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
         
         // Write header
@@ -397,6 +400,7 @@ impl KlineMsg {
         buf.put_f64_le(self.low_price);
         buf.put_f64_le(self.close_price);
         buf.put_f64_le(self.volume);
+        buf.put_f64_le(self.turnover);
         
         // Write timestamp
         buf.put_i64_le(self.timestamp);
