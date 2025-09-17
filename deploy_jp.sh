@@ -28,7 +28,7 @@ check_status() {
 # 服务器配置
 # 格式: "IP:角色" (角色: primary 或 secondary)
 SERVERS=(
-    # "178.173.228.168:primary"
+    #178.173.228.168:primary"
     "178.173.228.169:secondary"
 )
 
