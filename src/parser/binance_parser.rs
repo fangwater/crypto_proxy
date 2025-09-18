@@ -68,7 +68,10 @@ impl Parser for BinanceKlineParser {
                         }
                         
                         // 从k对象中提取OHLCV数据
-                        if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str), Some(volume_str), Some(turnover_str), Some(timestamp)) = (
+                        // 币安额外3个字段：n(成交笔数), V(主动买入成交量), Q(主动买入成交额)
+                        if let (Some(open_str), Some(high_str), Some(low_str), Some(close_str),
+                                 Some(volume_str), Some(turnover_str), Some(timestamp), 
+                                 Some(trade_num_str), Some(taker_buy_vol_str), Some(taker_buy_quote_vol_str)) = (
                             kline_obj.get("o").and_then(|v| v.as_str()),
                             kline_obj.get("h").and_then(|v| v.as_str()),
                             kline_obj.get("l").and_then(|v| v.as_str()),
@@ -76,24 +79,30 @@ impl Parser for BinanceKlineParser {
                             kline_obj.get("v").and_then(|v| v.as_str()), //成交量
                             kline_obj.get("q").and_then(|v| v.as_str()), //成交额
                             kline_obj.get("t").and_then(|v| v.as_i64()), 
+                            kline_obj.get("n").and_then(|v| v.as_str()), //成交笔数
+                            kline_obj.get("V").and_then(|v| v.as_str()), //主动买入成交量
+                            kline_obj.get("Q").and_then(|v| v.as_str()), //主动买入成交额
                         ) {
                             // 只为BTCUSDT打印OHLCV数据
                             if symbol.to_lowercase() == "btcusdt" {
-                                info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, q={}, t={}", 
-                                      open_str, high_str, low_str, close_str, volume_str, turnover_str, timestamp);
+                                info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, q={}, t={}, n={}, V={}, Q={}", 
+                                      open_str, high_str, low_str, close_str, volume_str, turnover_str, timestamp, trade_num_str, taker_buy_vol_str, taker_buy_quote_vol_str);
                             }
                             
                             // 解析价格和成交量数据
-                            if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume), Ok(turnover)) = (
+                            if let (Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume), Ok(turnover),Ok(trade_num), Ok(taker_buy_vol), Ok(taker_buy_quote_vol)) = (
                                 open_str.parse::<f64>(),
                                 high_str.parse::<f64>(),
                                 low_str.parse::<f64>(),
                                 close_str.parse::<f64>(),
                                 volume_str.parse::<f64>(),
                                 turnover_str.parse::<f64>(),
+                                trade_num_str.parse::<i64>(),
+                                taker_buy_vol_str.parse::<f64>(),
+                                taker_buy_quote_vol_str.parse::<f64>(),
                             ) {
                                 // 创建K线消息
-                                let kline_msg = KlineMsg::create(
+                                let mut kline_msg = KlineMsg::create(
                                     symbol.to_string(),
                                     open,
                                     high,
@@ -103,6 +112,9 @@ impl Parser for BinanceKlineParser {
                                     turnover,
                                     timestamp,
                                 );
+                                
+                                // 设置币安专属字段
+                                kline_msg.set_binance_fields(trade_num, taker_buy_vol, taker_buy_quote_vol);
                                 
                                 // 发送K线消息
                                 if sender.send(kline_msg.to_bytes()).is_ok() {
