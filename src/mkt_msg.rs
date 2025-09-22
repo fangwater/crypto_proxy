@@ -13,6 +13,7 @@ pub enum MktMsgType {
     IndexPrice = 1012,
     LiquidationOrder = 1013,
     FundingRate = 1014,
+    PremiumIndexKline = 1015,
     Error = 2222,
 }
 
@@ -424,6 +425,53 @@ impl KlineMsg {
         buf.put_f64_le(self.taker_buy_vol);
         buf.put_f64_le(self.taker_buy_quote_vol);
         
+        buf.freeze()
+    }
+}
+pub struct PremiumIndexKlineMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub open_price: f64,
+    pub high_price: f64,
+    pub low_price: f64,
+    pub close_price: f64,
+    pub timestamp: i64,
+}
+
+impl PremiumIndexKlineMsg {
+    pub fn create(
+        symbol: String,
+        open_price: f64,
+        high_price: f64,
+        low_price: f64,
+        close_price: f64,
+        timestamp: i64){
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::PremiumIndexKline,
+            symbol_length,
+            symbol,
+            open_price,
+            high_price,
+            low_price,
+            close_price,
+            timestamp,
+        }
+    }
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 * 4 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_f64_le(self.open_price);
+        buf.put_f64_le(self.high_price);
+        buf.put_f64_le(self.low_price);
+        buf.put_f64_le(self.close_price);
+        buf.put_i64_le(self.timestamp);
+
         buf.freeze()
     }
 }
