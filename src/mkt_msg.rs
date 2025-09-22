@@ -446,7 +446,7 @@ impl PremiumIndexKlineMsg {
         high_price: f64,
         low_price: f64,
         close_price: f64,
-        timestamp: i64){
+        timestamp: i64)->Self{
         let symbol_length = symbol.len() as u32;
         Self {
             msg_type: MktMsgType::PremiumIndexKline,

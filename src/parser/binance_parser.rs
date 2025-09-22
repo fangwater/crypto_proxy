@@ -1,9 +1,12 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
+use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, PremiumIndexKlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
 use std::collections::HashSet;
-use log::{info};
+use tokio::time::{sleep, Duration};
+use log::{info,error};
+use anyhow::anyhow;
+use reqwest;
 
 pub struct BinanceSignalParser {
     source: SignalSource,
@@ -41,11 +44,15 @@ impl Parser for BinanceSignalParser {
     }
 }
 
-pub struct BinanceKlineParser;
+pub struct BinanceKlineParser {
+    is_future : bool
+}
 
 impl BinanceKlineParser {
-    pub fn new() -> Self {
-        Self
+    pub fn new( is_future: bool) -> Self {
+        Self {
+            is_future : is_future
+        }
     }
 }
 
@@ -115,6 +122,61 @@ impl Parser for BinanceKlineParser {
                                 // 设置币安专属字段
                                 kline_msg.set_binance_fields(trade_num, taker_buy_vol, taker_buy_quote_vol);
                                 
+                                if self.is_future {
+                                    // let sender_clone = sender.clone();
+                                    let symbol_owned = symbol.to_string();
+                                    tokio::spawn(async move{
+                                        sleep(Duration::from_secs(1)).await;
+                                        // 直接内联请求和发送逻辑
+                                        let result = async {
+                                            let client = reqwest::Client::new();
+                                            let body = client
+                                                .get("https://fapi.binance.com/fapi/v1/premiumIndexKlines")
+                                                .query(&[("symbol", symbol_owned.as_str()), ("interval", "1m"), ("limit", "2")])
+                                                .send()
+                                                .await?
+                                                .error_for_status()?
+                                                .text()
+                                                .await?;
+
+                                            let response: Vec<Vec<serde_json::Value>> = serde_json::from_str(&body)?;
+                                            let first = response.get(0).ok_or_else(|| anyhow!("empty premium index kline response"))?;
+
+                                            // 解析响应字段
+                                            let open_time = first.get(0)
+                                                .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
+                                                .ok_or_else(|| anyhow!("invalid open_time"))?;
+                                            let open_price = first.get(1)
+                                                .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                .ok_or_else(|| anyhow!("invalid open price"))?;
+                                            let high_price = first.get(2)
+                                                .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                .ok_or_else(|| anyhow!("invalid high price"))?;
+                                            let low_price = first.get(3)
+                                                .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                .ok_or_else(|| anyhow!("invalid low price"))?;
+                                            let close_price = first.get(4)
+                                                .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                .ok_or_else(|| anyhow!("invalid close price"))?;
+
+                                            // 如果是 BTCUSDT，打印 Premium Index Kline 数据
+                                            // if symbol_owned.to_lowercase() == "btcusdt" {
+                                            //     info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
+                                            //         symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+                                            // }
+                                            info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
+                                            symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+
+                                            let msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
+                                            // sender_clone.send(msg.to_bytes())?;
+                                            Ok::<(), anyhow::Error>(())
+                                        }.await;
+
+                                        if let Err(err) = result {
+                                            error!("Failed to push premium index kline: {}", err);
+                                        }
+                                    });
+                                }
                                 // 发送K线消息
                                 if sender.send(kline_msg.to_bytes()).is_ok() {
                                     return 1;

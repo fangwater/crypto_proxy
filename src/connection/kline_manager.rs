@@ -61,8 +61,11 @@ impl KlineDataConnectionManager {
     /// 根据交易所类型构造 Kline parser
     async fn construct_kline_parser(&self, exchange: &str) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
         match exchange {
-            "binance-futures" | "binance" => {
-                Ok(Box::new(BinanceKlineParser::new()))
+            "binance-futures" => {
+                Ok(Box::new(BinanceKlineParser::new(true)))
+            }
+            "binance" => {
+                Ok(Box::new(BinanceKlineParser::new(false)))
             }
             "bybit" | "bybit-spot" => {
                 Ok(Box::new(BybitKlineParser::new()))
