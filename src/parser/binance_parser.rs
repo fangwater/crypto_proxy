@@ -146,16 +146,28 @@ impl Parser for BinanceKlineParser {
                                                 let response = match response {
                                                     Ok(resp) => resp,
                                                     Err(err) => {
-                                                        return Err(anyhow!("Request failed - URL: {}, symbol: {}, error: {}",
+                                                        // 检查是否是超时错误
+                                                        if err.is_timeout() {
+                                                            return Err(anyhow!("Request timeout (5s) - URL: {}?symbol={}&interval=1m&limit=2",
+                                                                url, symbol_owned));
+                                                        }
+                                                        // 检查是否是连接错误
+                                                        if err.is_connect() {
+                                                            return Err(anyhow!("Connection failed - URL: {}, symbol: {}, error: {}",
+                                                                url, symbol_owned, err));
+                                                        }
+                                                        // 其他错误 - 简化错误信息
+                                                        return Err(anyhow!("Request failed - URL: {}?symbol={}&interval=1m&limit=2, error: {}",
                                                             url, symbol_owned, err));
                                                     }
                                                 };
 
                                                 let status = response.status();
+
                                                 if !status.is_success() {
                                                     let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
-                                                    return Err(anyhow!("HTTP error - URL: {}, symbol: {}, status: {}, body: {}",
-                                                        url, symbol_owned, status, error_body));
+                                                    return Err(anyhow!("HTTP {} - URL: {}?symbol={}&interval=1m&limit=2, response: {}",
+                                                        status, url, symbol_owned, error_body));
                                                 }
 
                                                 let body = response.text().await
