@@ -3,7 +3,7 @@ use crate::parser::default_parser::Parser;
 use bytes::Bytes;
 use tokio::sync::broadcast;
 use std::collections::HashSet;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 use log::{info,error};
 use anyhow::anyhow;
 use reqwest;
@@ -126,7 +126,7 @@ impl Parser for BinanceKlineParser {
                                 
                                 if self.is_future {
                                     if let Some(client) = &self.http_client {
-                                        // let sender_clone = sender.clone();
+                                        let sender_clone = sender.clone();
                                         let symbol_owned = symbol.to_string();
                                         let client_clone = client.clone();
 
@@ -166,15 +166,15 @@ impl Parser for BinanceKlineParser {
                                                     .ok_or_else(|| anyhow!("invalid close price"))?;
 
                                                 // 如果是 BTCUSDT，打印 Premium Index Kline 数据
-                                                // if symbol_owned.to_lowercase() == "btcusdt" {
-                                                //     info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
-                                                //         symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
-                                                // }
-                                                info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
-                                                symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+                                                if symbol_owned.to_lowercase() == "btcusdt" {
+                                                    info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
+                                                        symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+                                                }
+                                                // info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
+                                                // symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
 
                                                 let msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
-                                                // sender_clone.send(msg.to_bytes())?;
+                                                sender_clone.send(msg.to_bytes())?;
                                                 Ok::<(), anyhow::Error>(())
                                             }.await;
 
