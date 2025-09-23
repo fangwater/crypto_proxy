@@ -134,19 +134,40 @@ impl Parser for BinanceKlineParser {
                                         // 或者直接去掉 spawn，因为 HTTP 请求本身就是异步的
                                         tokio::spawn(async move{
                                             // 直接内联请求和发送逻辑
+                                            let url = "https://fapi.binance.com/fapi/v1/premiumIndexKlines";
                                             let result = async {
-                                                let body = client_clone
-                                                    .get("https://fapi.binance.com/fapi/v1/premiumIndexKlines")
+                                                let response = client_clone
+                                                    .get(url)
                                                     .query(&[("symbol", symbol_owned.as_str()), ("interval", "1m"), ("limit", "2")])
                                                     .timeout(Duration::from_secs(5))  // 添加超时
                                                     .send()
-                                                    .await?
-                                                    .error_for_status()?
-                                                    .text()
-                                                    .await?;
+                                                    .await;
 
-                                                let response: Vec<Vec<serde_json::Value>> = serde_json::from_str(&body)?;
-                                                let first = response.get(0).ok_or_else(|| anyhow!("empty premium index kline response"))?;
+                                                let response = match response {
+                                                    Ok(resp) => resp,
+                                                    Err(err) => {
+                                                        return Err(anyhow!("Request failed - URL: {}, symbol: {}, error: {}",
+                                                            url, symbol_owned, err));
+                                                    }
+                                                };
+
+                                                let status = response.status();
+                                                if !status.is_success() {
+                                                    let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+                                                    return Err(anyhow!("HTTP error - URL: {}, symbol: {}, status: {}, body: {}",
+                                                        url, symbol_owned, status, error_body));
+                                                }
+
+                                                let body = response.text().await
+                                                    .map_err(|e| anyhow!("Failed to read response body - URL: {}, symbol: {}, error: {}",
+                                                        url, symbol_owned, e))?;
+
+                                                let response: Vec<Vec<serde_json::Value>> = serde_json::from_str(&body)
+                                                    .map_err(|e| anyhow!("JSON parse error - URL: {}, symbol: {}, error: {}",
+                                                        url, symbol_owned, e))?;
+
+                                                let first = response.get(0)
+                                                    .ok_or_else(|| anyhow!("Empty response - URL: {}, symbol: {}", url, symbol_owned))?;
 
                                                 // 解析响应字段
                                                 let open_time = first.get(0)
