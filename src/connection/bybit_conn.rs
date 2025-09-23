@@ -89,12 +89,12 @@ impl MktConnectionRunner for BybitConnection {
                     waiting_pong = true;
                     // 重置心跳计时
                     ping_timer = Instant::now() + Duration::from_secs(20);
-                    log::info!("Sent ping message with req_id: {:?}, reset ping timer to {:?}", req_id, ping_timer);
+                    log::info!("[{}] Sent ping message with req_id: {:?}, reset ping timer to {:?}", self.base_connection.connection_name, req_id, ping_timer);
                 }
                 // ====处理超时====
                 _ = time::sleep_until(reset_timer) => {
                     // 到期没有收到pong消息，则重启websocket
-                    log::error!("Bybit: Ping timeout detected. reset connecting...");
+                    log::error!("[{}] Ping timeout detected. reset connecting...", self.base_connection.connection_name);
                     ws_stream.close(None).await?; // 发送 CLOSE 帧
                     break;
                 }
@@ -120,14 +120,14 @@ impl MktConnectionRunner for BybitConnection {
                                         // 只有在等待pong消息时，需要parser text，检查是否是pong消息
                                         let msg: serde_json::Value = serde_json::from_slice(&text.as_bytes()).unwrap();
                                         if is_bybit_pong_msg(&msg) {
-                                            log::info!("Received pong message: {:?}", msg);
+                                            log::info!("[{}] Received pong message: {:?}", self.base_connection.connection_name, msg);
                                             waiting_pong = false;
                                             let req_id = msg["req_id"].as_str().unwrap();
                                             reset_timer = ping_timer + Duration::from_secs(5);
-                                            log::info!("Received pong message with req_id: {:?}, reset reset timer to {:?}", req_id, reset_timer);
+                                            log::info!("[{}] Received pong message with req_id: {:?}, reset reset timer to {:?}", self.base_connection.connection_name, req_id, reset_timer);
                                             //检查pong消息是否是suceess，如果不是，则断开连接
                                             if !msg["success"].as_bool().unwrap() {
-                                                error!("Bybit: Pong message is not success: {:?}", msg);
+                                                error!("[{}] Pong message is not success: {:?}", self.base_connection.connection_name, msg);
                                                 break;
                                             }
                                             continue;
@@ -155,11 +155,11 @@ impl MktConnectionRunner for BybitConnection {
                             }
                         }
                         Err(e) => {
-                            error!("WebSocket error: {:?}", e);
+                            error!("[{}] WebSocket error: {:?}", self.base_connection.connection_name, e);
                             break;
                         }
                         Ok(None) => {
-                            warn!("WebSocket connection closed by server");
+                            warn!("[{}] WebSocket connection closed by server", self.base_connection.connection_name);
                             break;
                         }
                     }
@@ -174,20 +174,20 @@ impl MktConnectionRunner for BybitConnection {
 impl MktConnectionHandler for BybitConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await {
+            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg, &self.base_connection.connection_name).await {
                 Ok(connection) => {
-                    info!("Successfully connected to bybit at {:?}", connection.connected_at);
+                    info!("[{}] Successfully connected at {:?}", self.base_connection.connection_name, connection.connected_at);
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
                     }else{
-                        info!("Connection closed, reconnecting...");
+                        info!("[{}] Connection closed, reconnecting...", self.base_connection.connection_name);
                     }
                 }
                 Err(e) => {
-                    error!("Failed to connect to bybit: {:?}", e);
+                    error!("[{}] Failed to connect: {:?}", self.base_connection.connection_name, e);
                     time::sleep(Duration::from_secs(5)).await;
                 }
             }

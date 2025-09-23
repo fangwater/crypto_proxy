@@ -163,10 +163,11 @@ impl DerivativesMetricsDataConnectionManager {
             tokio::spawn(async move {
                 info!("WebSocket connection task starting for {}", ws_description);
                 let mut connection = match construct_connection(
-                    ws_exchange, 
-                    ws_url, 
-                    ws_subscribe_msg, 
-                    raw_tx, 
+                    ws_exchange.clone(),
+                    format!("{}-{}", ws_exchange, ws_description),
+                    ws_url,
+                    ws_subscribe_msg,
+                    raw_tx,
                     ws_global_shutdown_rx
                 ) {
                     Ok(c) => {

@@ -47,7 +47,7 @@ impl MktConnectionRunner for BinanceConnection {
                 }
                 // ====处理ping超时====
                 _ = time::sleep_until(ping_send_timer) => {
-                    warn!("Binance-futures: Ping timeout detected. reset connecting...");
+                    warn!("[{}] Ping timeout detected. reset connecting...", self.base_connection.connection_name);
                     ws_stream.close(None).await?; // 发送 CLOSE 帧
                     break;
                 }
@@ -57,19 +57,19 @@ impl MktConnectionRunner for BinanceConnection {
                         Ok(Some(msg)) => {
                             match msg {
                                 Message::Ping(payload) => {
-                                    info!("Sent pong message to server: {:?}", payload);
+                                    info!("[{}] Sent pong message to server: {:?}", self.base_connection.connection_name, payload);
                                     if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
                                         error!("Failed to send pong message: {:?}", e);
                                         break;
                                     }
                                     ping_send_timer = Instant::now() + self.ping_interval + self.delay_interval;
-                                    info!("Reset ping_send_timer to {:?}", ping_send_timer);
+                                    info!("[{}] Reset ping_send_timer to {:?}", self.base_connection.connection_name, ping_send_timer);
                                 }
                                 Message::Close(frame) => {
-                                    warn!("Received close frame: {:?}", frame);
+                                    warn!("[{}] Received close frame: {:?}", self.base_connection.connection_name, frame);
                                     if let Some(close_frame) = &frame {
                                         if close_frame.reason == "Invalid request" {
-                                            error!("Received Invalid request close frame!");
+                                            error!("[{}] Received Invalid request close frame!", self.base_connection.connection_name);
                                             error!("Subscription message was: {}", self.base_connection.sub_msg);
                                             std::process::exit(1);
                                         }
@@ -97,11 +97,11 @@ impl MktConnectionRunner for BinanceConnection {
                             }
                         }
                         Err(e) => {
-                            error!("WebSocket error: {:?}", e);
+                            error!("[{}] WebSocket error: {:?}", self.base_connection.connection_name, e);
                             break;
                         }
                         Ok(None) => {
-                            warn!("WebSocket connection closed by server");
+                            warn!("[{}] WebSocket connection closed by server", self.base_connection.connection_name);
                             break;
                         }
                     }
@@ -116,20 +116,20 @@ impl MktConnectionRunner for BinanceConnection {
 impl MktConnectionHandler for BinanceConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await {
+            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg, &self.base_connection.connection_name).await {
                 Ok(connection) => {
-                    info!("successfully connected to Binance Futures at {:?}", connection.connected_at);
+                    info!("[{}] successfully connected at {:?}", self.base_connection.connection_name, connection.connected_at);
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
                     }else{
-                        info!("Connection closed, reconnecting...");
+                        info!("[{}] Connection closed, reconnecting...", self.base_connection.connection_name);
                     }
                 }
                 Err(e) => {
-                    error!("Failed to connect to binance-futures: {:?}", e);
+                    error!("[{}] Failed to connect: {:?}", self.base_connection.connection_name, e);
                     time::sleep(Duration::from_secs(5)).await;
                 }
             }

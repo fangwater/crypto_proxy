@@ -55,7 +55,7 @@ impl MktConnectionRunner for OkexConnection {
                 _ = time::sleep_until(reset_timer) => {
                     // 如果正在等待pong消息，则重启websocket
                     if waiting_pong {
-                        warn!("Okex: Ping timeout detected. reset connecting...");
+                        warn!("[{}] Ping timeout detected. reset connecting...", self.base_connection.connection_name);
                         ws_stream.close(None).await?; // 发送 CLOSE 帧
                         break;
                     } else {
@@ -68,7 +68,7 @@ impl MktConnectionRunner for OkexConnection {
                         reset_timer = Instant::now() + Duration::from_secs(25);
                         // 设置等待pong消息
                         waiting_pong = true;
-                        log::info!("Sent ping message: {:?}, reset timer to {:?}", b"ping", reset_timer);
+                        log::info!("[{}] Sent ping message: {:?}, reset timer to {:?}", self.base_connection.connection_name, b"ping", reset_timer);
                     }
                 }
                 // ====处理ws消息====
@@ -94,13 +94,13 @@ impl MktConnectionRunner for OkexConnection {
                                         waiting_pong = false;
                                         // 重置倒计时
                                         reset_timer = Instant::now() + Duration::from_secs(25);
-                                        log::info!("Received pong message: {:?}, reset timer to {:?}", text, reset_timer);
+                                        log::info!("[{}] Received pong message: {:?}, reset timer to {:?}", self.base_connection.connection_name, text, reset_timer);
                                     }else{
                                         // 收到消息后，如果不是waiting for pong的状态，则重置倒计时
                                         if !waiting_pong {
                                             reset_timer = Instant::now() + Duration::from_secs(25);
                                         }else{
-                                            log::warn!("Receive msg when waiting for pong : {}", text);
+                                            log::warn!("[{}] Receive msg when waiting for pong : {}", self.base_connection.connection_name, text);
                                         }
                                         let bytes = Bytes::from(text.into_bytes());
                                         if let Err(e) = self.base_connection.tx.send(bytes.clone()) {
@@ -124,9 +124,9 @@ impl MktConnectionRunner for OkexConnection {
                         }
                         Err(e) => {
                             self.restart_count += 1;
-                            error!("WebSocket error (restart count: {}): {:?}", self.restart_count, e);
+                            error!("[{}] WebSocket error (restart count: {}): {:?}", self.base_connection.connection_name, self.restart_count, e);
                             // Debug: Print detailed error info and exit for troubleshooting
-                            error!("OKEx connection failed with detailed info (restart #{}):", self.restart_count);
+                            error!("[{}] connection failed with detailed info (restart #{}):", self.base_connection.connection_name, self.restart_count);
                             // error!("  URL: {}", &self.base_connection.url);
                             // error!("  Subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
                             error!("  Error type: {:?}", e);
@@ -141,7 +141,7 @@ impl MktConnectionRunner for OkexConnection {
                             break;
                         }
                         Ok(None) => {
-                            warn!("WebSocket connection closed by server");
+                            warn!("[{}] WebSocket connection closed by server", self.base_connection.connection_name);
                             break;
                         }
                     }
@@ -156,24 +156,20 @@ impl MktConnectionRunner for OkexConnection {
 impl MktConnectionHandler for OkexConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
         loop {
-            // Debug: Print subscription message before attempting connection
-            // info!("OKEx subscription message: {}", serde_json::to_string_pretty(&self.base_connection.sub_msg).unwrap_or_else(|_| "Failed to serialize".to_string()));
-            info!("OKEx WebSocket URL: {}", &self.base_connection.url);
-            
-            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg).await {
+            match WsConnector::connect(&self.base_connection.url, &self.base_connection.sub_msg, &self.base_connection.connection_name).await {
                 Ok(connection) => {
-                    info!("Successfully connected to okex at {:?}", connection.connected_at);
+                    info!("[{}] Successfully connected at {:?}", self.base_connection.connection_name, connection.connected_at);
                     self.base_connection.connection = Some(connection);
                     self.run_connection().await?;
                     //检查shutdown的当前情况，如果是true则break
                     if *self.base_connection.shutdown_rx.borrow() {
                         break Ok(());
                     }else{
-                        info!("Connection closed, reconnecting... (total restart count: {})", self.restart_count);
+                        info!("[{}] Connection closed, reconnecting... (total restart count: {})", self.base_connection.connection_name, self.restart_count);
                     }
                 }
                 Err(e) => {
-                    error!("Failed to connect to okex: {:?}", e);
+                    error!("[{}] Failed to connect: {:?}", self.base_connection.connection_name, e);
                     time::sleep(Duration::from_secs(5)).await;
                 }
             }

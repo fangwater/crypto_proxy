@@ -106,10 +106,11 @@ impl KlineDataConnectionManager {
             
             tokio::spawn(async move {
                 let mut connection = match construct_connection(
-                    ws_exchange, 
-                    ws_url, 
-                    ws_subscribe_msg, 
-                    raw_tx, 
+                    ws_exchange.clone(),
+                    format!("{}-{}", ws_exchange, ws_description),
+                    ws_url,
+                    ws_subscribe_msg,
+                    raw_tx,
                     ws_global_shutdown_rx
                 ) {
                     Ok(c) => c,

@@ -16,6 +16,7 @@ pub struct WsConnectionResult {
 
 //每个行情订阅连接，包含一个连接，一个发送通道，一个关闭标志
 pub struct MktConnection {
+    pub connection_name: String, // 连接名称，如 "binance-futures-inc", "binance-kline" 等
     pub sub_msg: serde_json::Value, // 行情订阅消息
     pub url: String,    // 行情URL
     pub tx: broadcast::Sender<Bytes>, // 行情消息广播发送端
@@ -26,12 +27,14 @@ pub struct MktConnection {
 impl MktConnection {
     /// 创建新的MktConnection实例
     pub fn new(
+        connection_name: String,
         url: String,
         sub_msg: serde_json::Value,
         tx: broadcast::Sender<Bytes>,
         global_shutdown_rx: watch::Receiver<bool>,
-    ) -> Self {        
+    ) -> Self {
         Self {
+            connection_name,
             url,
             sub_msg,
             tx,
@@ -72,25 +75,25 @@ impl WsConnector {
     const MAX_RETRIES: usize = 5;
     const RETRY_DELAY: Duration = Duration::from_secs(1);
 
-    pub async fn connect(url: &str, sub_msg: &serde_json::Value) -> anyhow::Result<WsConnectionResult> {
+    pub async fn connect(url: &str, sub_msg: &serde_json::Value, connection_name: &str) -> anyhow::Result<WsConnectionResult> {
         let url = Url::parse(url).with_context(|| "Invalid URL")?;
         for retry in 0..Self::MAX_RETRIES {
             match connect_async(url.clone()).await {
                 Ok((mut ws_stream, _)) => {
                     match ws_stream.send(Message::Text(sub_msg.to_string())).await {
                         Ok(_) => {
-                            info!("Successful send subscription message");
+                            info!("[{}] Successful send subscription message", connection_name);
                             return Ok(WsConnectionResult { ws_stream: Arc::new(Mutex::new(ws_stream)), connected_at: Instant::now() });
                         }
                         Err(e) => {
-                            error!("Failed to send subscription message: {}", e);
+                            error!("[{}] Failed to send subscription message: {}", connection_name, e);
                             return Err(e.into());
                         }
                     }
                 }
                 Err(e) => {
                     if Self::is_dns_error(&e) {
-                        error!("DNS error, retrying... ({}/{})", retry + 1, Self::MAX_RETRIES);
+                        error!("[{}] DNS error, retrying... ({}/{})", connection_name, retry + 1, Self::MAX_RETRIES);
                         time::sleep(Self::RETRY_DELAY).await;
                     } else {
                         return Err(e.into());
@@ -98,7 +101,7 @@ impl WsConnector {
                 }
             }
         }
-        Err(anyhow::anyhow!("Failed to connect to WebSocket after {} retries", Self::MAX_RETRIES))
+        Err(anyhow::anyhow!("[{}] Failed to connect to WebSocket after {} retries", connection_name, Self::MAX_RETRIES))
     }
 }
 
@@ -119,18 +122,19 @@ pub trait MktConnectionHandler : MktConnectionRunner + Send{
 
 /// 根据交易所类型构造相应的连接处理器
 pub fn construct_connection(
-    exchange: String, 
-    url: String, 
-    subscribe_msg: serde_json::Value, 
-    tx: broadcast::Sender<Bytes>, 
+    exchange: String,
+    connection_name: String,
+    url: String,
+    subscribe_msg: serde_json::Value,
+    tx: broadcast::Sender<Bytes>,
     global_shutdown_rx: watch::Receiver<bool>
 ) -> anyhow::Result<Box<dyn MktConnectionHandler>> {
     use crate::connection::binance_conn::BinanceConnection;
     use crate::connection::okex_conn::OkexConnection;
     use crate::connection::bybit_conn::BybitConnection;
-    
-    let base_connection = MktConnection::new(url, subscribe_msg, tx, global_shutdown_rx);
-    
+
+    let base_connection = MktConnection::new(connection_name, url, subscribe_msg, tx, global_shutdown_rx);
+
     match exchange.as_str() {
         "binance-futures" | "binance" => {
             Ok(Box::new(BinanceConnection::new(base_connection)))

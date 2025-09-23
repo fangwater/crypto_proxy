@@ -1,41 +1,40 @@
 is_primary: true
-restart_duration_secs: 18000
-snapshot_requery_time: "--:--:--"  # "--:--:--" 表示立即查询(30秒后)，空字符串禁用快照，可设置如 "02:00:00" 定时查询
-symbol_socket: "/root/project/symbol_server/exchange"
+restart_duration_secs: 3600
+snapshot_requery_time: "00:00:01"  # "--:--:--" 表示立即查询(30秒后)，空字符串禁用快照，可设置如 "02:00:00" 定时查询
+symbol_socket: "/home/el01/crypto_mkt/symbol_server/exchange"
 
-# 交易所配置 - 每个交易所使用相同的 ZMQ 配置，所有数据类型都启用
 binance:
   ipc_path: "/tmp/zmq_mkt_binance_feeds.ipc"
-  primary_addr: "103.141.183.151:5555"
-  secondary_addr: "103.141.183.152:5555"
+  primary_addr: "192.168.1.51:15555"
+  secondary_addr: "192.168.1.52:15555"
   hwm: 5000
 
 binance-futures:
   ipc_path: "/tmp/zmq_mkt_binance-futures_feeds.ipc"
-  primary_addr: "103.141.183.151:5556"
-  secondary_addr: "103.141.183.152:5556"
+  primary_addr: "192.168.1.51:15556"
+  secondary_addr: "192.168.1.52:15556"
   hwm: 5000
 
 okex:
   ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"
-  primary_addr: "103.141.183.151:5557"
-  secondary_addr: "103.141.183.152:5557"
+  primary_addr: "192.168.1.53:15557"
+  secondary_addr: "192.168.1.54:15557"
   hwm: 5000
 
 okex-swap:
   ipc_path: "/tmp/zmq_mkt_okex-swap_feeds.ipc"  
-  primary_addr: "103.141.183.151:5558"
-  secondary_addr: "103.141.183.152:5558"
+  primary_addr: "192.168.1.53:15558"
+  secondary_addr: "192.168.1.54:15558"
   hwm: 5000
 
 bybit:
   ipc_path: "/tmp/zmq_mkt_bybit_feeds.ipc"
-  primary_addr: "103.141.183.151:5559"
-  secondary_addr: "103.141.183.152:5559"
+  primary_addr: "192.168.1.53:15559"
+  secondary_addr: "192.168.1.54:15559"
   hwm: 5000
 
 bybit-spot:
   ipc_path: "/tmp/zmq_mkt_bybit-spot_feeds.ipc"
-  primary_addr: "103.141.183.151:5560"
-  secondary_addr: "103.141.183.152:5560"
+  primary_addr: "192.168.1.53:15560"
+  secondary_addr: "192.168.1.54:15560"
   hwm: 5000
