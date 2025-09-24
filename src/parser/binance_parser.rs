@@ -222,13 +222,7 @@ impl Parser for BinanceKlineParser {
                                                             warn!("[Premium Index Kline] Unable to parse second record open_time for {}, using zeros", symbol_owned);
                                                             (0, 0.0, 0.0, 0.0, 0.0)
                                                         };
-
-                                                    // 如果是 BTCUSDT，打印 Premium Index Kline 数据
-                                                    // if symbol_owned.to_lowercase() == "btcusdt" {
-                                                    //     info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
-                                                    //         symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
-                                                    // }
-                                                    info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}", symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+                                                    //info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}", symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
 
                                                     let mut msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
 
@@ -250,7 +244,12 @@ impl Parser for BinanceKlineParser {
                                                                         json.get("time").and_then(|v| v.as_i64())
                                                                     ) {
                                                                         msg.set_open_interest(oi, time);
-                                                                        info!("[Binance Open Interest] {}: oi={}, time={}", symbol_owned, oi, time);
+                                                                        //info!("[Binance Open Interest] {}: oi={}, time={}", symbol_owned, oi, time);
+                                                                                                                            // 如果是 BTCUSDT，打印 Premium Index Kline 数据
+                                                                        if symbol_owned.to_lowercase() == "btcusdt" {
+                                                                            info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}, open_interest={},tran={}",
+                                                                                symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time, oi, time);
+                                                                        }
                                                                         sender_clone.send(msg.to_bytes())?;
                                                                     }
                                                                 }
