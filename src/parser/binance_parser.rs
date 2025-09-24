@@ -133,6 +133,7 @@ impl Parser for BinanceKlineParser {
                                         // 使用 tokio::task::spawn_blocking 来避免阻塞运行时
                                         // 或者直接去掉 spawn，因为 HTTP 请求本身就是异步的
                                         tokio::spawn(async move{
+                                            tokio::time::sleep(tokio::time::Duration::from_secs(3));
                                             // 直接内联请求和发送逻辑
                                             let url = "https://fapi.binance.com/fapi/v1/premiumIndexKlines";
                                             let result = async {
