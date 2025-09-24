@@ -437,6 +437,8 @@ pub struct PremiumIndexKlineMsg {
     pub low_price: f64,
     pub close_price: f64,
     pub timestamp: i64,
+    pub open_interest: f64,
+    pub transaction_time: i64
 }
 
 impl PremiumIndexKlineMsg {
@@ -457,10 +459,17 @@ impl PremiumIndexKlineMsg {
             low_price,
             close_price,
             timestamp,
+            open_interest: 0.0,
+            transaction_time: 0
         }
     }
+    pub fn set_open_interest(&mut self, open_interest: f64, time: i64) {
+        self.open_interest = open_interest;
+        self.transaction_time = time;
+    }
+
     pub fn to_bytes(&self) -> Bytes {
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 * 4 + 8;
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 * 4 + 8 + 2 * 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
@@ -471,6 +480,9 @@ impl PremiumIndexKlineMsg {
         buf.put_f64_le(self.low_price);
         buf.put_f64_le(self.close_price);
         buf.put_i64_le(self.timestamp);
+
+        buf.put_f64_le(self.open_interest);
+        buf.put_i64_le(self.transaction_time);
 
         buf.freeze()
     }

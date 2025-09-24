@@ -4,7 +4,7 @@ use bytes::Bytes;
 use tokio::sync::broadcast;
 use std::collections::HashSet;
 use tokio::time::Duration;
-use log::{info,error};
+use log::{info,error,warn};
 use anyhow::anyhow;
 use reqwest;
 
@@ -133,7 +133,6 @@ impl Parser for BinanceKlineParser {
                                         // 使用 tokio::task::spawn_blocking 来避免阻塞运行时
                                         // 或者直接去掉 spawn，因为 HTTP 请求本身就是异步的
                                         tokio::spawn(async move{
-                                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                                             // 直接内联请求和发送逻辑
                                             let url = "https://fapi.binance.com/fapi/v1/premiumIndexKlines";
                                             let result = async {
@@ -178,25 +177,51 @@ impl Parser for BinanceKlineParser {
                                                         .map_err(|e| anyhow!("JSON parse error - URL: {}, symbol: {}, error: {}",
                                                             url, symbol_owned, e))?;
 
-                                                    let first = response.get(0)
-                                                        .ok_or_else(|| anyhow!("Empty response - URL: {}, symbol: {}", url, symbol_owned))?;
+                                                    // 检查是否有足够的数据
+                                                    if response.len() < 2 {
+                                                        return Err(anyhow!("Insufficient response data - URL: {}, symbol: {}, got {} records, expected 2",
+                                                            url, symbol_owned, response.len()));
+                                                    }
 
-                                                    // 解析响应字段
-                                                    let open_time = first.get(0)
-                                                        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
-                                                        .ok_or_else(|| anyhow!("invalid open_time"))?;
-                                                    let open_price = first.get(1)
-                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                        .ok_or_else(|| anyhow!("invalid open price"))?;
-                                                    let high_price = first.get(2)
-                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                        .ok_or_else(|| anyhow!("invalid high price"))?;
-                                                    let low_price = first.get(3)
-                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                        .ok_or_else(|| anyhow!("invalid low price"))?;
-                                                    let close_price = first.get(4)
-                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                        .ok_or_else(|| anyhow!("invalid close price"))?;
+                                                    // 获取第二条数据（index=1）
+                                                    let second = response.get(1)
+                                                        .ok_or_else(|| anyhow!("Missing second record - URL: {}, symbol: {}", url, symbol_owned))?;
+
+                                                    let second_open_time = second.get(0)
+                                                        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
+
+                                                    // 检查时间戳并决定使用的数据
+                                                    let (open_time, open_price, high_price, low_price, close_price) =
+                                                        if let Some(second_time) = second_open_time {
+                                                            // timestamp 是 K线消息的时间戳（从上面的 kline_msg 获取）
+                                                            if second_time == timestamp {
+                                                                // 时间戳匹配，使用第二条数据（get(1)）
+                                                                (
+                                                                    second_time,
+                                                                    second.get(1)
+                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                                        .ok_or_else(|| anyhow!("invalid open price"))?,
+                                                                    second.get(2)
+                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                                        .ok_or_else(|| anyhow!("invalid high price"))?,
+                                                                    second.get(3)
+                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                                        .ok_or_else(|| anyhow!("invalid low price"))?,
+                                                                    second.get(4)
+                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                                        .ok_or_else(|| anyhow!("invalid close price"))?
+                                                                )
+                                                            } else {
+                                                                // 时间戳不匹配，打印警告并使用默认值
+                                                                warn!("[Premium Index Kline] Timestamp mismatch for {}: kline_ts={}, premium_index_ts={}, using zeros",
+                                                                    symbol_owned, timestamp, second_time);
+                                                                (0, 0.0, 0.0, 0.0, 0.0)
+                                                            }
+                                                        } else {
+                                                            // 无法解析第二条数据的时间戳，使用默认值
+                                                            warn!("[Premium Index Kline] Unable to parse second record open_time for {}, using zeros", symbol_owned);
+                                                            (0, 0.0, 0.0, 0.0, 0.0)
+                                                        };
 
                                                     // 如果是 BTCUSDT，打印 Premium Index Kline 数据
                                                     // if symbol_owned.to_lowercase() == "btcusdt" {
@@ -205,8 +230,41 @@ impl Parser for BinanceKlineParser {
                                                     // }
                                                     info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}", symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
 
-                                                    let msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
-                                                    sender_clone.send(msg.to_bytes())?;
+                                                    let mut msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
+
+                                                    // 请求 open interest 数据
+                                                    let oi_url = "https://fapi.binance.com/fapi/v1/openInterest";
+                                                    let oi_response = client_clone
+                                                        .get(oi_url)
+                                                        .query(&[("symbol", symbol_owned.as_str())])
+                                                        .timeout(Duration::from_secs(3))
+                                                        .send()
+                                                        .await;
+
+                                                    match oi_response {
+                                                        Ok(resp) if resp.status().is_success() => {
+                                                            if let Ok(body) = resp.text().await {
+                                                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                                                                    if let (Some(oi), Some(time)) = (
+                                                                        json.get("openInterest").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()),
+                                                                        json.get("time").and_then(|v| v.as_i64())
+                                                                    ) {
+                                                                        msg.set_open_interest(oi, time);
+                                                                        info!("[Binance Open Interest] {}: oi={}, time={}", symbol_owned, oi, time);
+                                                                        sender_clone.send(msg.to_bytes())?;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Ok(resp) => {
+                                                            let status = resp.status();
+                                                            let error_body = resp.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+                                                            error!("Open Interest HTTP {} for {}: {}", status, symbol_owned, error_body);
+                                                        }
+                                                        Err(err) => {
+                                                            error!("Failed to fetch open interest for {}: {}", symbol_owned, err);
+                                                        }
+                                                    }
                                                     return Ok::<(), anyhow::Error>(()); // 成功，返回
                                                 }
 
