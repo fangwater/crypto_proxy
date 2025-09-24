@@ -136,79 +136,86 @@ impl Parser for BinanceKlineParser {
                                             // 直接内联请求和发送逻辑
                                             let url = "https://fapi.binance.com/fapi/v1/premiumIndexKlines";
                                             let result = async {
-                                                let response = client_clone
-                                                    .get(url)
-                                                    .query(&[("symbol", symbol_owned.as_str()), ("interval", "1m"), ("limit", "2")])
-                                                    .timeout(Duration::from_secs(5))  // 添加超时
-                                                    .send()
-                                                    .await;
+                                                const MAX_RETRIES: u32 = 3;
+                                                let mut last_error = None;
 
-                                                let response = match response {
-                                                    Ok(resp) => resp,
-                                                    Err(err) => {
-                                                        // 检查是否是超时错误
-                                                        if err.is_timeout() {
-                                                            return Err(anyhow!("Request timeout (5s) - URL: {}?symbol={}&interval=1m&limit=2",
-                                                                url, symbol_owned));
-                                                        }
-                                                        // 检查是否是连接错误
-                                                        if err.is_connect() {
-                                                            return Err(anyhow!("Connection failed - URL: {}, symbol: {}, error: {}",
-                                                                url, symbol_owned, err));
-                                                        }
-                                                        // 其他错误 - 简化错误信息
-                                                        return Err(anyhow!("Request failed - URL: {}?symbol={}&interval=1m&limit=2, error: {}",
-                                                            url, symbol_owned, err));
+                                                // 重试最多3次
+                                                for retry in 0..MAX_RETRIES {
+                                                    if retry > 0 {
+                                                        // 重试前等待一小段时间
+                                                        tokio::time::sleep(Duration::from_millis(500 * retry as u64)).await;
                                                     }
-                                                };
 
-                                                let status = response.status();
+                                                    let response = client_clone
+                                                        .get(url)
+                                                        .query(&[("symbol", symbol_owned.as_str()), ("interval", "1m"), ("limit", "2")])
+                                                        .timeout(Duration::from_secs(5))  // 添加超时
+                                                        .send()
+                                                        .await;
 
-                                                if !status.is_success() {
-                                                    let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
-                                                    return Err(anyhow!("HTTP {} - URL: {}?symbol={}&interval=1m&limit=2, response: {}",
-                                                        status, url, symbol_owned, error_body));
+                                                    let response = match response {
+                                                        Ok(resp) => resp,
+                                                        Err(err) => {
+                                                            last_error = Some(err);
+                                                            continue; // 继续重试
+                                                        }
+                                                    };
+
+                                                    let status = response.status();
+
+                                                    if !status.is_success() {
+                                                        let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
+                                                        return Err(anyhow!("HTTP {} - URL: {}?symbol={}&interval=1m&limit=2, response: {}",
+                                                            status, url, symbol_owned, error_body));
+                                                    }
+
+                                                    let body = response.text().await
+                                                        .map_err(|e| anyhow!("Failed to read response body - URL: {}, symbol: {}, error: {}",
+                                                            url, symbol_owned, e))?;
+
+                                                    let response: Vec<Vec<serde_json::Value>> = serde_json::from_str(&body)
+                                                        .map_err(|e| anyhow!("JSON parse error - URL: {}, symbol: {}, error: {}",
+                                                            url, symbol_owned, e))?;
+
+                                                    let first = response.get(0)
+                                                        .ok_or_else(|| anyhow!("Empty response - URL: {}, symbol: {}", url, symbol_owned))?;
+
+                                                    // 解析响应字段
+                                                    let open_time = first.get(0)
+                                                        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
+                                                        .ok_or_else(|| anyhow!("invalid open_time"))?;
+                                                    let open_price = first.get(1)
+                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                        .ok_or_else(|| anyhow!("invalid open price"))?;
+                                                    let high_price = first.get(2)
+                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                        .ok_or_else(|| anyhow!("invalid high price"))?;
+                                                    let low_price = first.get(3)
+                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                        .ok_or_else(|| anyhow!("invalid low price"))?;
+                                                    let close_price = first.get(4)
+                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
+                                                        .ok_or_else(|| anyhow!("invalid close price"))?;
+
+                                                    // 如果是 BTCUSDT，打印 Premium Index Kline 数据
+                                                    // if symbol_owned.to_lowercase() == "btcusdt" {
+                                                    //     info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
+                                                    //         symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+                                                    // }
+                                                    info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}", symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+
+                                                    let msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
+                                                    sender_clone.send(msg.to_bytes())?;
+                                                    return Ok::<(), anyhow::Error>(()); // 成功，返回
                                                 }
 
-                                                let body = response.text().await
-                                                    .map_err(|e| anyhow!("Failed to read response body - URL: {}, symbol: {}, error: {}",
-                                                        url, symbol_owned, e))?;
-
-                                                let response: Vec<Vec<serde_json::Value>> = serde_json::from_str(&body)
-                                                    .map_err(|e| anyhow!("JSON parse error - URL: {}, symbol: {}, error: {}",
-                                                        url, symbol_owned, e))?;
-
-                                                let first = response.get(0)
-                                                    .ok_or_else(|| anyhow!("Empty response - URL: {}, symbol: {}", url, symbol_owned))?;
-
-                                                // 解析响应字段
-                                                let open_time = first.get(0)
-                                                    .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
-                                                    .ok_or_else(|| anyhow!("invalid open_time"))?;
-                                                let open_price = first.get(1)
-                                                    .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                    .ok_or_else(|| anyhow!("invalid open price"))?;
-                                                let high_price = first.get(2)
-                                                    .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                    .ok_or_else(|| anyhow!("invalid high price"))?;
-                                                let low_price = first.get(3)
-                                                    .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                    .ok_or_else(|| anyhow!("invalid low price"))?;
-                                                let close_price = first.get(4)
-                                                    .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                    .ok_or_else(|| anyhow!("invalid close price"))?;
-
-                                                // 如果是 BTCUSDT，打印 Premium Index Kline 数据
-                                                if symbol_owned.to_lowercase() == "btcusdt" {
-                                                    info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
-                                                        symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
+                                                // 所有重试都失败了
+                                                if let Some(err) = last_error {
+                                                    return Err(anyhow!("Request failed after {} retries - URL: {}?symbol={}&interval=1m&limit=2, error: {}",
+                                                        MAX_RETRIES, url, symbol_owned, err));
                                                 }
-                                                // info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}",
-                                                // symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
 
-                                                let msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
-                                                sender_clone.send(msg.to_bytes())?;
-                                                Ok::<(), anyhow::Error>(())
+                                                Err(anyhow!("Unexpected error: no response after retries"))
                                             }.await;
 
                                             if let Err(err) = result {
