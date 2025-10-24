@@ -30,8 +30,10 @@ check_status() {
 SERVERS=(
     # "178.173.228.168:primary"
     # "178.173.228.169:secondary"
-    "178.173.241.34:primary"
-    "178.173.241.35:secondary"
+    "103.90.136.194:primary"
+    "103.90.136.195:secondary"
+    "103.90.136.196:primary"
+    "103.90.136.197:secondary"
 )
 
 user=el01
