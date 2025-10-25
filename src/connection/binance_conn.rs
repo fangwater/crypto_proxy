@@ -191,15 +191,15 @@ impl BinanceFuturesSnapshotQuery {
         }
 
         let url = match exchange {
-            "binance" => rest_cfg.spot_depth_url.as_str(),
-            "binance-futures" => rest_cfg.futures_depth_url.as_str(),
+            "binance" => rest_cfg.spot_depth_url(),
+            "binance-futures" => rest_cfg.futures_depth_url(),
             _ => return Err(anyhow::anyhow!("Invalid exchange: {}", exchange)),
         };
 
         loop {
             //打印请求的url
             let response = match client
-                .get(url)
+                .get(&url)
                 .query(&[
                     ("symbol", &upper_symbol),
                     ("limit", &Self::LIMIT.to_string()),

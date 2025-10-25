@@ -14,6 +14,8 @@ pub enum MktMsgType {
     LiquidationOrder = 1013,
     FundingRate = 1014,
     PremiumIndexKline = 1015,
+    BinanceIncSeqNo = 1016,
+    BinanceTopLongShortRatio = 1017,
     Error = 2222,
 }
 
@@ -77,6 +79,45 @@ pub struct IndexPriceMsg {
     pub symbol: String,
     pub index_price: f64,
     pub timestamp: i64,
+}
+
+#[allow(non_snake_case)]
+pub struct BinanceIncSeqNoMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub pu: i64,
+    pub u: i64,
+    pub u_upper: i64,
+}
+
+impl BinanceIncSeqNoMsg {
+    pub fn create(symbol: String, pu: i64, u: i64, u_upper: i64) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::BinanceIncSeqNo,
+            symbol_length,
+            symbol,
+            pu,
+            u,
+            u_upper,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        // msg_type(4) + symbol_length(4) + symbol + pu(8) + u(8) + U(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_i64_le(self.pu);
+        buf.put_i64_le(self.u);
+        buf.put_i64_le(self.u_upper);
+
+        buf.freeze()
+    }
 }
 /// 对永续合约来说, 币安的预估结算没有意义，不需要考虑Estimated Settle Price字段
 
@@ -490,6 +531,94 @@ impl PremiumIndexKlineMsg {
 
         buf.put_f64_le(self.open_interest);
         buf.put_i64_le(self.transaction_time);
+
+        buf.freeze()
+    }
+}
+
+pub struct TopLongShortRatioMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub timestamp: i64,
+    pub top_account_long: f64,
+    pub top_account_short: f64,
+    pub top_account_ratio: f64,
+    pub top_position_long: f64,
+    pub top_position_short: f64,
+    pub top_position_ratio: f64,
+    pub global_account_long: f64,
+    pub global_account_short: f64,
+    pub global_account_ratio: f64,
+    pub top_account_timestamp: i64,
+    pub top_position_timestamp: i64,
+    pub global_account_timestamp: i64,
+}
+
+impl TopLongShortRatioMsg {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        symbol: String,
+        timestamp: i64,
+        top_account_long: f64,
+        top_account_short: f64,
+        top_account_ratio: f64,
+        top_position_long: f64,
+        top_position_short: f64,
+        top_position_ratio: f64,
+        global_account_long: f64,
+        global_account_short: f64,
+        global_account_ratio: f64,
+        top_account_timestamp: i64,
+        top_position_timestamp: i64,
+        global_account_timestamp: i64,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::BinanceTopLongShortRatio,
+            symbol_length,
+            symbol,
+            timestamp,
+            top_account_long,
+            top_account_short,
+            top_account_ratio,
+            top_position_long,
+            top_position_short,
+            top_position_ratio,
+            global_account_long,
+            global_account_short,
+            global_account_ratio,
+            top_account_timestamp,
+            top_position_timestamp,
+            global_account_timestamp,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        // msg_type(4) + symbol_length(4) + symbol + base timestamp(8) + 9*f64 + 3*i64
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 9 * 8 + 3 * 8;
+        let mut buf = BytesMut::with_capacity(total_size);
+
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_i64_le(self.timestamp);
+
+        buf.put_f64_le(self.top_account_long);
+        buf.put_f64_le(self.top_account_short);
+        buf.put_f64_le(self.top_account_ratio);
+
+        buf.put_f64_le(self.top_position_long);
+        buf.put_f64_le(self.top_position_short);
+        buf.put_f64_le(self.top_position_ratio);
+
+        buf.put_f64_le(self.global_account_long);
+        buf.put_f64_le(self.global_account_short);
+        buf.put_f64_le(self.global_account_ratio);
+
+        buf.put_i64_le(self.top_account_timestamp);
+        buf.put_i64_le(self.top_position_timestamp);
+        buf.put_i64_le(self.global_account_timestamp);
 
         buf.freeze()
     }

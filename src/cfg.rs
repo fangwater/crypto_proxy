@@ -8,41 +8,75 @@ use tokio::fs;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 
-fn default_binance_spot_depth_url() -> String {
-    "https://data-api.binance.vision/api/v3/depth".to_string()
+fn default_binance_base_url() -> String {
+    "https://data-api.binance.vision".to_string()
 }
 
-fn default_binance_futures_depth_url() -> String {
-    "https://fapi.binance.com/fapi/v1/depth".to_string()
+fn default_binance_futures_base_url() -> String {
+    "https://fapi.binance.com".to_string()
 }
 
-fn default_binance_premium_index_klines_url() -> String {
-    "https://fapi.binance.com/fapi/v1/premiumIndexKlines".to_string()
-}
-
-fn default_binance_open_interest_url() -> String {
-    "https://fapi.binance.com/fapi/v1/openInterest".to_string()
+fn join_url(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    format!("{}/{}", base, path)
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct BinanceRestCfg {
-    #[serde(default = "default_binance_spot_depth_url")]
-    pub spot_depth_url: String,
-    #[serde(default = "default_binance_futures_depth_url")]
-    pub futures_depth_url: String,
-    #[serde(default = "default_binance_premium_index_klines_url")]
-    pub premium_index_klines_url: String,
-    #[serde(default = "default_binance_open_interest_url")]
-    pub open_interest_url: String,
+    #[serde(default = "default_binance_base_url")]
+    pub binance_url: String,
+    #[serde(
+        default = "default_binance_futures_base_url",
+        rename = "binance-futures_url"
+    )]
+    pub binance_futures_url: String,
+}
+
+impl BinanceRestCfg {
+    pub fn spot_depth_url(&self) -> String {
+        join_url(&self.binance_url, "api/v3/depth")
+    }
+
+    pub fn futures_depth_url(&self) -> String {
+        join_url(&self.binance_futures_url, "fapi/v1/depth")
+    }
+
+    pub fn premium_index_klines_url(&self) -> String {
+        join_url(&self.binance_futures_url, "fapi/v1/premiumIndexKlines")
+    }
+
+    pub fn open_interest_url(&self) -> String {
+        join_url(&self.binance_futures_url, "fapi/v1/openInterest")
+    }
+
+    pub fn top_long_short_position_ratio_url(&self) -> String {
+        join_url(
+            &self.binance_futures_url,
+            "futures/data/topLongShortPositionRatio",
+        )
+    }
+
+    pub fn top_long_short_account_ratio_url(&self) -> String {
+        join_url(
+            &self.binance_futures_url,
+            "futures/data/topLongShortAccountRatio",
+        )
+    }
+
+    pub fn global_long_short_account_ratio_url(&self) -> String {
+        join_url(
+            &self.binance_futures_url,
+            "futures/data/globalLongShortAccountRatio",
+        )
+    }
 }
 
 impl Default for BinanceRestCfg {
     fn default() -> Self {
         Self {
-            spot_depth_url: default_binance_spot_depth_url(),
-            futures_depth_url: default_binance_futures_depth_url(),
-            premium_index_klines_url: default_binance_premium_index_klines_url(),
-            open_interest_url: default_binance_open_interest_url(),
+            binance_url: default_binance_base_url(),
+            binance_futures_url: default_binance_futures_base_url(),
         }
     }
 }

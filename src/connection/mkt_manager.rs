@@ -189,8 +189,19 @@ impl MktDataConnectionManager {
 
             // Create inc parser based on exchange (static dispatch for performance)
             match exchange.as_str() {
-                "binance-futures" | "binance" => {
-                    let parser = BinanceIncParser::new();
+                "binance-futures" => {
+                    let parser = BinanceIncParser::new(true);
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("inc msg batch {}", i),
+                        parser,
+                    )
+                    .await;
+                }
+                "binance" => {
+                    let parser = BinanceIncParser::new(false);
                     self.spawn_mkt_connection_typed(
                         exchange,
                         url,

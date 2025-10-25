@@ -17,10 +17,8 @@ binance-futures:
   hwm: 5000
 
 binance_rest:
-  spot_depth_url: "https://data-api.binance.vision/api/v3/depth"
-  futures_depth_url: "https://fapi.binance.com/fapi/v1/depth"
-  premium_index_klines_url: "https://fapi.binance.com/fapi/v1/premiumIndexKlines"
-  open_interest_url: "https://fapi.binance.com/fapi/v1/openInterest"
+  binance_url: "https://data-api.binance.vision"
+  binance-futures_url: "https://fapi.binance.com"
 
 okex:
   ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"

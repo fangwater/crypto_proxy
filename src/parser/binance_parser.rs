@@ -1,16 +1,18 @@
 use crate::cfg::BinanceRestCfg;
 use crate::mkt_msg::{
-    FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg,
-    PremiumIndexKlineMsg, SignalMsg, SignalSource, TradeMsg,
+    BinanceIncSeqNoMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
+    MarkPriceMsg, PremiumIndexKlineMsg, SignalMsg, SignalSource, TopLongShortRatioMsg, TradeMsg,
 };
 use crate::parser::default_parser::Parser;
-use anyhow::anyhow;
 use bytes::Bytes;
 use log::{error, info, warn};
-use reqwest;
+use reqwest::{self, StatusCode};
 use std::collections::HashSet;
 use tokio::sync::broadcast;
 use tokio::time::Duration;
+
+const ONE_MINUTE_MILLIS: i64 = 60_000;
+const FIVE_MINUTE_MILLIS: i64 = 5 * ONE_MINUTE_MILLIS;
 
 pub struct BinanceSignalParser {
     source: SignalSource,
@@ -57,6 +59,9 @@ pub struct BinanceKlineParser {
     http_client: Option<reqwest::Client>,
     premium_index_klines_url: Option<String>,
     open_interest_url: Option<String>,
+    top_long_short_account_ratio_url: Option<String>,
+    top_long_short_position_ratio_url: Option<String>,
+    global_long_short_account_ratio_url: Option<String>,
 }
 
 impl BinanceKlineParser {
@@ -66,8 +71,11 @@ impl BinanceKlineParser {
             Self {
                 is_future,
                 http_client: Some(reqwest::Client::new()),
-                premium_index_klines_url: Some(cfg.premium_index_klines_url.clone()),
-                open_interest_url: Some(cfg.open_interest_url.clone()),
+                premium_index_klines_url: Some(cfg.premium_index_klines_url()),
+                open_interest_url: Some(cfg.open_interest_url()),
+                top_long_short_account_ratio_url: Some(cfg.top_long_short_account_ratio_url()),
+                top_long_short_position_ratio_url: Some(cfg.top_long_short_position_ratio_url()),
+                global_long_short_account_ratio_url: Some(cfg.global_long_short_account_ratio_url()),
             }
         } else {
             Self {
@@ -75,6 +83,9 @@ impl BinanceKlineParser {
                 http_client: None,
                 premium_index_klines_url: None,
                 open_interest_url: None,
+                top_long_short_account_ratio_url: None,
+                top_long_short_position_ratio_url: None,
+                global_long_short_account_ratio_url: None,
             }
         }
     }
@@ -123,6 +134,10 @@ impl Parser for BinanceKlineParser {
                             kline_obj.get("V").and_then(|v| v.as_str()), //主动买入成交量
                             kline_obj.get("Q").and_then(|v| v.as_str()), //主动买入成交额
                         ) {
+                            let close_time = kline_obj
+                                .get("T")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(timestamp + ONE_MINUTE_MILLIS);
                             // 只为BTCUSDT打印OHLCV数据
                             if symbol.to_lowercase() == "btcusdt" {
                                 info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, q={}, t={}, n={}, V={}, Q={}", 
@@ -185,163 +200,358 @@ impl Parser for BinanceKlineParser {
                                                 return 0;
                                             }
                                         };
+                                        let top_account_ratio_url =
+                                            match &self.top_long_short_account_ratio_url {
+                                                Some(url) => url.clone(),
+                                                None => {
+                                                    error!("Missing Binance futures top long short account ratio URL in configuration");
+                                                    return 0;
+                                                }
+                                            };
+                                        let top_position_ratio_url =
+                                            match &self.top_long_short_position_ratio_url {
+                                                Some(url) => url.clone(),
+                                                None => {
+                                                    error!(
+                                                        "Missing Binance futures top long short position ratio URL in configuration"
+                                                    );
+                                                    return 0;
+                                                }
+                                            };
+                                        let global_account_ratio_url =
+                                            match &self.global_long_short_account_ratio_url {
+                                                Some(url) => url.clone(),
+                                                None => {
+                                                    error!(
+                                                        "Missing Binance futures global long short account ratio URL in configuration"
+                                                    );
+                                                    return 0;
+                                                }
+                                            };
                                         let sender_clone = sender.clone();
                                         let symbol_owned = symbol.to_string();
                                         let client_clone = client.clone();
 
-                                        // 使用 tokio::task::spawn_blocking 来避免阻塞运行时
-                                        // 或者直接去掉 spawn，因为 HTTP 请求本身就是异步的
                                         tokio::spawn(async move {
-                                            // 直接内联请求和发送逻辑
-                                            let url = premium_index_url;
-                                            let result = async {
-                                                const MAX_RETRIES: u32 = 3;
-                                                let mut last_error = None;
+                                            let premium_resp = client_clone
+                                                .get(premium_index_url.as_str())
+                                                .query(&[
+                                                    ("symbol", symbol_owned.as_str()),
+                                                    ("interval", "1m"),
+                                                    ("limit", "2"),
+                                                ])
+                                                .timeout(Duration::from_secs(5))
+                                                .send()
+                                                .await;
 
-                                                // 重试最多3次
-                                                for retry in 0..MAX_RETRIES {
-                                                    if retry > 0 {
-                                                        // 重试前等待一小段时间
-                                                        tokio::time::sleep(Duration::from_millis(500 * retry as u64)).await;
-                                                    }
-
-                                                    let response = client_clone
-                                                        .get(url.as_str())
-                                                        .query(&[("symbol", symbol_owned.as_str()), ("interval", "1m"), ("limit", "2")])
-                                                        .timeout(Duration::from_secs(5))  // 添加超时
-                                                        .send()
-                                                        .await;
-
-                                                    let response = match response {
-                                                        Ok(resp) => resp,
-                                                        Err(err) => {
-                                                            last_error = Some(err);
-                                                            continue; // 继续重试
-                                                        }
-                                                    };
-
-                                                    let status = response.status();
-
-                                                    if !status.is_success() {
-                                                        let error_body = response.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
-                                                        return Err(anyhow!("HTTP {} - URL: {}?symbol={}&interval=1m&limit=2, response: {}",
-                                                            status, url, symbol_owned, error_body));
-                                                    }
-
-                                                    let body = response.text().await
-                                                        .map_err(|e| anyhow!("Failed to read response body - URL: {}, symbol: {}, error: {}",
-                                                            url, symbol_owned, e))?;
-
-                                                    let response: Vec<Vec<serde_json::Value>> = serde_json::from_str(&body)
-                                                        .map_err(|e| anyhow!("JSON parse error - URL: {}, symbol: {}, error: {}",
-                                                            url, symbol_owned, e))?;
-
-                                                    // 检查是否有足够的数据
-                                                    if response.len() < 2 {
-                                                        return Err(anyhow!("Insufficient response data - URL: {}, symbol: {}, got {} records, expected 2",
-                                                            url, symbol_owned, response.len()));
-                                                    }
-
-                                                    // 获取第二条数据（index=1）
-                                                    let second = response.get(1)
-                                                        .ok_or_else(|| anyhow!("Missing second record - URL: {}, symbol: {}", url, symbol_owned))?;
-
-                                                    let second_open_time = second.get(0)
-                                                        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()));
-
-                                                    // 检查时间戳并决定使用的数据
-                                                    let (open_time, open_price, high_price, low_price, close_price) =
-                                                        if let Some(second_time) = second_open_time {
-                                                            // timestamp 是 K线消息的时间戳（从上面的 kline_msg 获取）
-                                                            if second_time == timestamp {
-                                                                // 时间戳匹配，使用第二条数据（get(1)）
-                                                                (
-                                                                    second_time,
-                                                                    second.get(1)
-                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                                        .ok_or_else(|| anyhow!("invalid open price"))?,
-                                                                    second.get(2)
-                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                                        .ok_or_else(|| anyhow!("invalid high price"))?,
-                                                                    second.get(3)
-                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                                        .ok_or_else(|| anyhow!("invalid low price"))?,
-                                                                    second.get(4)
-                                                                        .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok()))
-                                                                        .ok_or_else(|| anyhow!("invalid close price"))?
-                                                                )
-                                                            } else {
-                                                                // 时间戳不匹配，打印警告并使用默认值
-                                                                warn!("[Premium Index Kline] Timestamp mismatch for {}: kline_ts={}, premium_index_ts={}, using zeros",
-                                                                    symbol_owned, timestamp, second_time);
-                                                                (0, 0.0, 0.0, 0.0, 0.0)
-                                                            }
-                                                        } else {
-                                                            // 无法解析第二条数据的时间戳，使用默认值
-                                                            warn!("[Premium Index Kline] Unable to parse second record open_time for {}, using zeros", symbol_owned);
-                                                            (0, 0.0, 0.0, 0.0, 0.0)
-                                                        };
-                                                    //info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}", symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time);
-
-                                                    let mut msg = PremiumIndexKlineMsg::create(symbol_owned.clone(), open_price, high_price, low_price, close_price, open_time);
-
-                                                    // 请求 open interest 数据
-                                                    let oi_url = open_interest_url.clone();
-                                                    let oi_response = client_clone
-                                                        .get(oi_url.as_str())
-                                                        .query(&[("symbol", symbol_owned.as_str())])
-                                                        .timeout(Duration::from_secs(3))
-                                                        .send()
-                                                        .await;
-
-                                                    match oi_response {
-                                                        Ok(resp) if resp.status().is_success() => {
-                                                            if let Ok(body) = resp.text().await {
-                                                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                                                                    if let (Some(oi), Some(time)) = (
-                                                                        json.get("openInterest").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok()),
-                                                                        json.get("time").and_then(|v| v.as_i64())
-                                                                    ) {
-                                                                        msg.set_open_interest(oi, time);
-                                                                        //info!("[Binance Open Interest] {}: oi={}, time={}", symbol_owned, oi, time);
-                                                                                                                            // 如果是 BTCUSDT，打印 Premium Index Kline 数据
-                                                                        if symbol_owned.to_lowercase() == "btcusdt" {
-                                                                            info!("[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}, open_interest={},tran={}",
-                                                                                symbol_owned.to_lowercase(), open_price, high_price, low_price, close_price, open_time, oi, time);
-                                                                        }
-                                                                        sender_clone.send(msg.to_bytes())?;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        Ok(resp) => {
-                                                            let status = resp.status();
-                                                            let error_body = resp.text().await.unwrap_or_else(|_| "Unable to read error body".to_string());
-                                                            error!("Open Interest HTTP {} for {}: {}", status, symbol_owned, error_body);
-                                                        }
-                                                        Err(err) => {
-                                                            error!("Failed to fetch open interest for {}: {}", symbol_owned, err);
-                                                        }
-                                                    }
-                                                    return Ok::<(), anyhow::Error>(()); // 成功，返回
+                                            let premium_resp = match premium_resp {
+                                                Ok(resp) => resp,
+                                                Err(err) => {
+                                                    error!(
+                                                        "Premium Index request error for {}: {}",
+                                                        symbol_owned, err
+                                                    );
+                                                    return;
                                                 }
+                                            };
 
-                                                // 所有重试都失败了
-                                                if let Some(err) = last_error {
-                                                    return Err(anyhow!("Request failed after {} retries - URL: {}?symbol={}&interval=1m&limit=2, error: {}",
-                                                        MAX_RETRIES, url, symbol_owned, err));
+                                            let status = premium_resp.status();
+                                            let body =
+                                                premium_resp.text().await.unwrap_or_else(|_| {
+                                                    "Unable to read response body".to_string()
+                                                });
+
+                                            if !status.is_success() {
+                                                if status != StatusCode::SERVICE_UNAVAILABLE
+                                                    && status != StatusCode::REQUEST_TIMEOUT
+                                                {
+                                                    error!(
+                                                        "Premium Index HTTP {} for {}: {}",
+                                                        status, symbol_owned, body
+                                                    );
                                                 }
+                                                return;
+                                            }
 
-                                                Err(anyhow!("Unexpected error: no response after retries"))
-                                            }.await;
+                                            let records: Vec<Vec<serde_json::Value>> =
+                                                match serde_json::from_str(&body) {
+                                                    Ok(data) => data,
+                                                    Err(err) => {
+                                                        error!(
+                                                            "Premium Index JSON parse error for {}: {}",
+                                                            symbol_owned, err
+                                                        );
+                                                        return;
+                                                    }
+                                                };
 
-                                            if let Err(err) = result {
+                                            if records.is_empty() {
                                                 error!(
-                                                    "Failed to push premium index kline: {}",
-                                                    err
+                                                    "Premium Index response empty for {}",
+                                                    symbol_owned
+                                                );
+                                                return;
+                                            }
+
+                                            let parse_record = |record: &Vec<serde_json::Value>| -> Option<(i64, f64, f64, f64, f64)> {
+                                                let parse_i64 = |idx: usize, field: &str| -> Option<i64> {
+                                                    record
+                                                        .get(idx)
+                                                        .and_then(|v| {
+                                                            v.as_i64().or_else(|| {
+                                                                v.as_str()?.parse::<i64>().ok()
+                                                            })
+                                                        })
+                                                        .or_else(|| {
+                                                            error!(
+                                                                "Premium Index invalid {} for {}",
+                                                                field, symbol_owned
+                                                            );
+                                                            None
+                                                        })
+                                                };
+
+                                                let parse_f64 = |idx: usize, field: &str| -> Option<f64> {
+                                                    record
+                                                        .get(idx)
+                                                        .and_then(|v| {
+                                                            v.as_f64().or_else(|| {
+                                                                v.as_str()?.parse::<f64>().ok()
+                                                            })
+                                                        })
+                                                        .or_else(|| {
+                                                            error!(
+                                                                "Premium Index invalid {} for {}",
+                                                                field, symbol_owned
+                                                            );
+                                                            None
+                                                        })
+                                                };
+
+                                                Some((
+                                                    parse_i64(0, "open time")?,
+                                                    parse_f64(1, "open price")?,
+                                                    parse_f64(2, "high price")?,
+                                                    parse_f64(3, "low price")?,
+                                                    parse_f64(4, "close price")?,
+                                                ))
+                                            };
+
+                                            let primary = match parse_record(&records[0]) {
+                                                Some(values) => values,
+                                                None => return,
+                                            };
+
+                                            let secondary = records.get(1).and_then(parse_record);
+
+                                            let (
+                                                open_time,
+                                                open_price,
+                                                high_price,
+                                                low_price,
+                                                close_price,
+                                            ) = match secondary {
+                                                Some((second_time, o, h, l, c))
+                                                    if second_time == timestamp =>
+                                                {
+                                                    (second_time, o, h, l, c)
+                                                }
+                                                Some((second_time, _, _, _, _)) => {
+                                                    warn!(
+                                                            "[Premium Index Kline] Timestamp mismatch for {}: kline_ts={}, premium_index_ts={}, using latest record",
+                                                            symbol_owned, timestamp, second_time
+                                                        );
+                                                    primary
+                                                }
+                                                None => primary,
+                                            };
+
+                                            let mut msg = PremiumIndexKlineMsg::create(
+                                                symbol_owned.clone(),
+                                                open_price,
+                                                high_price,
+                                                low_price,
+                                                close_price,
+                                                open_time,
+                                            );
+
+                                            let open_interest_resp = client_clone
+                                                .get(open_interest_url.as_str())
+                                                .query(&[("symbol", symbol_owned.as_str())])
+                                                .timeout(Duration::from_secs(3))
+                                                .send()
+                                                .await;
+
+                                            let open_interest_resp = match open_interest_resp {
+                                                Ok(resp) => resp,
+                                                Err(err) => {
+                                                    error!(
+                                                        "Open Interest request error for {}: {}",
+                                                        symbol_owned, err
+                                                    );
+                                                    return;
+                                                }
+                                            };
+
+                                            let oi_status = open_interest_resp.status();
+                                            let oi_body =
+                                                open_interest_resp.text().await.unwrap_or_else(
+                                                    |_| "Unable to read response body".to_string(),
+                                                );
+
+                                            if !oi_status.is_success() {
+                                                if oi_status != StatusCode::SERVICE_UNAVAILABLE
+                                                    && oi_status != StatusCode::REQUEST_TIMEOUT
+                                                {
+                                                    error!(
+                                                        "Open Interest HTTP {} for {}: {}",
+                                                        oi_status, symbol_owned, oi_body
+                                                    );
+                                                }
+                                                return;
+                                            }
+
+                                            let json: serde_json::Value =
+                                                match serde_json::from_str(&oi_body) {
+                                                    Ok(value) => value,
+                                                    Err(err) => {
+                                                        error!(
+                                                        "Open Interest JSON parse error for {}: {}",
+                                                        symbol_owned, err
+                                                    );
+                                                        return;
+                                                    }
+                                                };
+
+                                            if let (Some(oi_str), Some(time)) = (
+                                                json.get("openInterest").and_then(|v| v.as_str()),
+                                                json.get("time").and_then(|v| v.as_i64()),
+                                            ) {
+                                                match oi_str.parse::<f64>() {
+                                                    Ok(oi) => {
+                                                        msg.set_open_interest(oi, time);
+                                                        if symbol_owned.to_lowercase() == "btcusdt"
+                                                        {
+                                                            info!(
+                                                                "[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}, open_interest={},tran={}",
+                                                                symbol_owned.to_lowercase(),
+                                                                open_price,
+                                                                high_price,
+                                                                low_price,
+                                                                close_price,
+                                                                open_time,
+                                                                oi,
+                                                                time
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(err) => {
+                                                        error!(
+                                                            "Open Interest parse error for {}: {} ({})",
+                                                            symbol_owned, oi_str, err
+                                                        );
+                                                    }
+                                                }
+                                            } else {
+                                                error!(
+                                                    "Open Interest missing fields for {}",
+                                                    symbol_owned
+                                                );
+                                            }
+
+                                            if let Err(err) = sender_clone.send(msg.to_bytes()) {
+                                                error!(
+                                                    "Failed to broadcast premium index kline for {}: {}",
+                                                    symbol_owned, err
                                                 );
                                             }
                                         });
+
+                                        if is_five_minute_boundary(close_time) {
+                                            let ratio_symbol = symbol.to_string();
+                                            let ratio_sender = sender.clone();
+                                            let ratio_client = client.clone();
+                                            let account_url = top_account_ratio_url.clone();
+                                            let position_url = top_position_ratio_url.clone();
+                                            let global_url = global_account_ratio_url.clone();
+                                            tokio::spawn(async move {
+                                            let (account_res, position_res, global_res) = tokio::join!(
+                                                fetch_ratio_metrics(
+                                                    ratio_client.clone(),
+                                                    account_url,
+                                                    ratio_symbol.clone(),
+                                                    "top-account",
+                                                    "longAccount",
+                                                    "shortAccount",
+                                                    close_time
+                                                ),
+                                                fetch_ratio_metrics(
+                                                    ratio_client.clone(),
+                                                    position_url,
+                                                    ratio_symbol.clone(),
+                                                    "top-position",
+                                                    "longPosition",
+                                                    "shortPosition",
+                                                    close_time
+                                                ),
+                                                fetch_ratio_metrics(
+                                                    ratio_client,
+                                                    global_url,
+                                                    ratio_symbol.clone(),
+                                                    "global-account",
+                                                    "longAccount",
+                                                    "shortAccount",
+                                                    close_time
+                                                )
+                                            );
+
+                                                if let (Ok(account), Ok(position), Ok(global)) =
+                                                    (account_res, position_res, global_res)
+                                                {
+                                                    let ratio_msg = TopLongShortRatioMsg::create(
+                                                        ratio_symbol.clone(),
+                                                        close_time,
+                                                        account.long_value,
+                                                        account.short_value,
+                                                        account.ratio_value,
+                                                        position.long_value,
+                                                        position.short_value,
+                                                        position.ratio_value,
+                                                        global.long_value,
+                                                        global.short_value,
+                                                        global.ratio_value,
+                                                        account.timestamp,
+                                                        position.timestamp,
+                                                        global.timestamp,
+                                                    );
+
+                                                    if let Err(err) = ratio_sender.send(ratio_msg.to_bytes()) {
+                                                        error!(
+                                                            "Failed to broadcast top long/short ratio for {}: {}",
+                                                            ratio_symbol, err
+                                                        );
+                                                    }
+                                                    if ratio_symbol.to_lowercase() == "btcusdt" {
+                                                        info!(
+                                                            "[Binance Top LongShort] {}: account(long={}, short={}, ratio={}, ts={}), position(long={}, short={}, ratio={}, ts={}), global(long={}, short={}, ratio={}, ts={})",
+                                                            ratio_symbol.to_lowercase(),
+                                                            account.long_value,
+                                                            account.short_value,
+                                                            account.ratio_value,
+                                                            account.timestamp,
+                                                            position.long_value,
+                                                            position.short_value,
+                                                            position.ratio_value,
+                                                            position.timestamp,
+                                                            global.long_value,
+                                                            global.short_value,
+                                                            global.ratio_value,
+                                                            global.timestamp
+                                                        );
+                                                    }
+                                                }
+                                            });
+                                        }
                                     }
                                 }
                                 // 发送K线消息
@@ -356,6 +566,129 @@ impl Parser for BinanceKlineParser {
         }
         0
     }
+}
+
+struct RatioMetrics {
+    long_value: f64,
+    short_value: f64,
+    ratio_value: f64,
+    timestamp: i64,
+}
+
+fn is_five_minute_boundary(timestamp: i64) -> bool {
+    timestamp % FIVE_MINUTE_MILLIS == 0
+}
+
+async fn fetch_ratio_metrics(
+    client: reqwest::Client,
+    url: String,
+    symbol: String,
+    label: &'static str,
+    long_key: &'static str,
+    short_key: &'static str,
+    close_time: i64,
+) -> Result<RatioMetrics, ()> {
+    let response = client
+        .get(url.as_str())
+        .query(&[
+            ("symbol", symbol.as_str()),
+            ("period", "5m"),
+            ("limit", "2"),
+        ])
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(resp) => resp,
+        Err(err) => {
+            error!("{} request error for {}: {}", label, symbol, err);
+            return Err(());
+        }
+    };
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "Unable to read response body".to_string());
+
+    if !status.is_success() {
+        if status != StatusCode::SERVICE_UNAVAILABLE && status != StatusCode::REQUEST_TIMEOUT {
+            error!("{} HTTP {} for {}: {}", label, status, symbol, body);
+        }
+        return Err(());
+    }
+
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(&body) {
+        Ok(value) => value,
+        Err(err) => {
+            error!("{} JSON parse error for {}: {}", label, symbol, err);
+            return Err(());
+        }
+    };
+
+    if entries.is_empty() {
+        error!("{} response empty for {}", label, symbol);
+        return Err(());
+    }
+
+    let entry = match entries
+        .iter()
+        .find(|entry| entry.get("timestamp").and_then(|v| v.as_i64()) == Some(close_time))
+    {
+        Some(entry) => entry,
+        None => {
+            error!(
+                "{} missing record for {} at close_time {}",
+                label, symbol, close_time
+            );
+            return Err(());
+        }
+    };
+
+    let parse_value = |key: &str| -> Option<f64> {
+        entry.get(key).and_then(|v| {
+            v.as_f64()
+                .or_else(|| v.as_str()?.parse::<f64>().ok())
+        })
+    };
+
+    let long_value = match parse_value(long_key) {
+        Some(value) => value,
+        None => {
+            error!("{} missing {} for {}", label, long_key, symbol);
+            return Err(());
+        }
+    };
+
+    let short_value = match parse_value(short_key) {
+        Some(value) => value,
+        None => {
+            error!("{} missing {} for {}", label, short_key, symbol);
+            return Err(());
+        }
+    };
+
+    let ratio_value = match parse_value("longShortRatio") {
+        Some(value) => value,
+        None => {
+            error!("{} missing longShortRatio for {}", label, symbol);
+            return Err(());
+        }
+    };
+
+    let timestamp = entry
+        .get("timestamp")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(close_time);
+
+    Ok(RatioMetrics {
+        long_value,
+        short_value,
+        ratio_value,
+        timestamp,
+    })
 }
 
 pub struct BinanceDerivativesMetricsParser {
@@ -629,11 +962,13 @@ impl BinanceSnapshotParser {
     }
 }
 
-pub struct BinanceIncParser;
+pub struct BinanceIncParser {
+    is_futures: bool,
+}
 
 impl BinanceIncParser {
-    pub fn new() -> Self {
-        Self
+    pub fn new(is_futures: bool) -> Self {
+        Self { is_futures }
     }
 }
 
@@ -683,12 +1018,40 @@ impl BinanceIncParser {
             json_value.get("b").and_then(|v| v.as_array()), // bids
             json_value.get("a").and_then(|v| v.as_array()), // asks
         ) {
+            let mut parsed_count = 0;
+            let symbol_string = symbol.to_string();
+
+            let prev_update_id = if self.is_futures {
+                match json_value.get("pu").and_then(|v| v.as_i64()) {
+                    Some(value) => value,
+                    None => {
+                        error!(
+                            "Missing 'pu' field in futures depthUpdate for symbol {}",
+                            symbol
+                        );
+                        return 0;
+                    }
+                }
+            } else {
+                0
+            };
+
+            let seq_msg = BinanceIncSeqNoMsg::create(
+                symbol_string.clone(),
+                prev_update_id,
+                final_update_id,
+                first_update_id,
+            );
+            if sender.send(seq_msg.to_bytes()).is_ok() {
+                parsed_count += 1;
+            }
+
             let bids_count = bids_array.len() as u32;
             let asks_count = asks_array.len() as u32;
 
             // 创建增量消息
             let mut inc_msg = IncMsg::create(
-                symbol.to_string(),
+                symbol_string,
                 first_update_id,
                 final_update_id,
                 timestamp,
@@ -702,8 +1065,10 @@ impl BinanceIncParser {
 
             // 发送增量消息
             if sender.send(inc_msg.to_bytes()).is_ok() {
-                return 1;
+                parsed_count += 1;
             }
+
+            return parsed_count;
         }
         0
     }
