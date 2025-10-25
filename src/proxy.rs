@@ -1,38 +1,41 @@
 ///proxy 从tokio的broadcast 通过forwarder转发到tcp和ipc
 use crate::forwarder::ZmqForwarder;
 use bytes::Bytes;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::interval;
 use tokio::sync::broadcast;
 use tokio::sync::watch;
-use std::sync::Arc;
 use tokio::sync::Notify;
+use tokio::time::interval;
 
 //proxy需要异步运行，因此需要实现send trait
 pub struct Proxy {
-    forwarder: ZmqForwarder, 
-    out_rx : broadcast::Receiver<Bytes>, //消息的输出通道
+    forwarder: ZmqForwarder,
+    out_rx: broadcast::Receiver<Bytes>, //消息的输出通道
     proxy_shutdown: watch::Receiver<bool>,
     tp_reset_notify: Arc<Notify>,
 }
 
-
 impl Proxy {
-    pub fn new(forwarder: ZmqForwarder, out_rx: broadcast::Receiver<Bytes>, proxy_shutdown: watch::Receiver<bool>, tp_reset_notify: Arc<Notify>) -> Self {
-        Self { 
-            forwarder, 
+    pub fn new(
+        forwarder: ZmqForwarder,
+        out_rx: broadcast::Receiver<Bytes>,
+        proxy_shutdown: watch::Receiver<bool>,
+        tp_reset_notify: Arc<Notify>,
+    ) -> Self {
+        Self {
+            forwarder,
             out_rx,
             proxy_shutdown,
             tp_reset_notify,
         }
     }
 
-
     pub async fn run(&mut self) {
         let mut stats_timer = interval(Duration::from_secs(3));
         // 跳过第一次立即触发
         stats_timer.tick().await;
-        
+
         loop {
             tokio::select! {
                 _ = stats_timer.tick() => {

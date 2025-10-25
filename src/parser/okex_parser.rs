@@ -1,8 +1,11 @@
-use crate::mkt_msg::{SignalMsg, SignalSource, KlineMsg, LiquidationMsg, MarkPriceMsg, IndexPriceMsg, FundingRateMsg, TradeMsg, IncMsg, Level};
+use crate::mkt_msg::{
+    FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg, MarkPriceMsg,
+    SignalMsg, SignalSource, TradeMsg,
+};
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
-use tokio::sync::broadcast;
 use std::collections::HashSet;
+use tokio::sync::broadcast;
 
 pub struct OkexSignalParser {
     source: SignalSource,
@@ -11,7 +14,11 @@ pub struct OkexSignalParser {
 impl OkexSignalParser {
     pub fn new(is_ipc: bool) -> Self {
         Self {
-            source: if is_ipc { SignalSource::Ipc } else { SignalSource::Tcp },
+            source: if is_ipc {
+                SignalSource::Ipc
+            } else {
+                SignalSource::Tcp
+            },
         }
     }
 }
@@ -23,15 +30,16 @@ impl Parser for OkexSignalParser {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // Extract timestamp from data[0].ts
                 if let Some(timestamp) = json_value
-                    .get("data").and_then(|v| v.get(0))
+                    .get("data")
+                    .and_then(|v| v.get(0))
                     .and_then(|item| item.get("ts"))
                     .and_then(|ts| ts.as_str())
-                    .and_then(|s| s.parse::<i64>().ok()) {
-                    
+                    .and_then(|s| s.parse::<i64>().ok())
+                {
                     // Create signal message
                     let signal_msg = SignalMsg::create(self.source, timestamp);
                     let signal_bytes = signal_msg.to_bytes();
-                    
+
                     // Send signal
                     if sender.send(signal_bytes).is_ok() {
                         return 1;
@@ -60,8 +68,8 @@ impl Parser for OkexKlineParser {
                 if let Some(symbol) = json_value
                     .get("arg")
                     .and_then(|arg| arg.get("instId"))
-                    .and_then(|inst_id| inst_id.as_str()) {
-                    
+                    .and_then(|inst_id| inst_id.as_str())
+                {
                     // Extract kline data from data array
                     if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
                         if let Some(kline_data) = data_array.first().and_then(|v| v.as_array()) {
@@ -74,9 +82,17 @@ impl Parser for OkexKlineParser {
                                 } else {
                                     return 0; // 状态字段无效
                                 }
-                                
+
                                 // Parse kline data: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
-                                if let (Some(ts_str), Some(o_str), Some(h_str), Some(l_str), Some(c_str), Some(vol_str), Some(vol_ccy_quote_str)) = (
+                                if let (
+                                    Some(ts_str),
+                                    Some(o_str),
+                                    Some(h_str),
+                                    Some(l_str),
+                                    Some(c_str),
+                                    Some(vol_str),
+                                    Some(vol_ccy_quote_str),
+                                ) = (
                                     kline_data[0].as_str(),
                                     kline_data[1].as_str(),
                                     kline_data[2].as_str(),
@@ -86,7 +102,15 @@ impl Parser for OkexKlineParser {
                                     kline_data[7].as_str(),
                                 ) {
                                     // Parse all values
-                                    if let (Ok(timestamp), Ok(open), Ok(high), Ok(low), Ok(close), Ok(volume), Ok(turnover)) = (
+                                    if let (
+                                        Ok(timestamp),
+                                        Ok(open),
+                                        Ok(high),
+                                        Ok(low),
+                                        Ok(close),
+                                        Ok(volume),
+                                        Ok(turnover),
+                                    ) = (
                                         ts_str.parse::<i64>(),
                                         o_str.parse::<f64>(),
                                         h_str.parse::<f64>(),
@@ -106,7 +130,7 @@ impl Parser for OkexKlineParser {
                                             turnover,
                                             timestamp,
                                         );
-                                        
+
                                         // Send kline message
                                         if sender.send(kline_msg.to_bytes()).is_ok() {
                                             return 1;
@@ -143,10 +167,16 @@ impl Parser for OkexDerivativesMetricsParser {
                 if let Some(arg) = json_value.get("arg") {
                     if let Some(channel) = arg.get("channel").and_then(|v| v.as_str()) {
                         match channel {
-                            "liquidation-orders" => return self.parse_liquidation_data(&json_value, sender),
+                            "liquidation-orders" => {
+                                return self.parse_liquidation_data(&json_value, sender)
+                            }
                             "mark-price" => return self.parse_mark_price_data(&json_value, sender),
-                            "funding-rate" => return self.parse_funding_rate_data(&json_value, sender),
-                            "index-tickers" => return self.parse_index_price_data(&json_value, sender),
+                            "funding-rate" => {
+                                return self.parse_funding_rate_data(&json_value, sender)
+                            }
+                            "index-tickers" => {
+                                return self.parse_index_price_data(&json_value, sender)
+                            }
                             _ => return 0,
                         }
                     }
@@ -158,11 +188,15 @@ impl Parser for OkexDerivativesMetricsParser {
 }
 
 impl OkexDerivativesMetricsParser {
-    fn parse_liquidation_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_liquidation_data(
+        &self,
+        json_value: &serde_json::Value,
+        sender: &broadcast::Sender<Bytes>,
+    ) -> usize {
         // Parse liquidation data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
-            
+
             for data_item in data_array {
                 if let Some(details_array) = data_item.get("details").and_then(|v| v.as_array()) {
                     // Extract symbol from instId
@@ -171,9 +205,14 @@ impl OkexDerivativesMetricsParser {
                         if !self.symbols.contains(inst_id) {
                             continue;
                         }
-                        
+
                         for detail in details_array {
-                            if let (Some(side), Some(sz_str), Some(bk_px_str), Some(timestamp_str)) = (
+                            if let (
+                                Some(side),
+                                Some(sz_str),
+                                Some(bk_px_str),
+                                Some(timestamp_str),
+                            ) = (
                                 detail.get("side").and_then(|v| v.as_str()),
                                 detail.get("sz").and_then(|v| v.as_str()),
                                 detail.get("bkPx").and_then(|v| v.as_str()),
@@ -187,11 +226,11 @@ impl OkexDerivativesMetricsParser {
                                 ) {
                                     // Convert OKEx side to liquidation_side char
                                     let liquidation_side = match side {
-                                        "buy" => 'B',   // 买入平仓
-                                        "sell" => 'S',  // 卖出平仓
+                                        "buy" => 'B',  // 买入平仓
+                                        "sell" => 'S', // 卖出平仓
                                         _ => continue,
                                     };
-                                    
+
                                     // Create liquidation message
                                     let liquidation_msg = LiquidationMsg::create(
                                         inst_id.to_string(),
@@ -200,7 +239,7 @@ impl OkexDerivativesMetricsParser {
                                         price,
                                         timestamp,
                                     );
-                                    
+
                                     // Send liquidation message
                                     if sender.send(liquidation_msg.to_bytes()).is_ok() {
                                         parsed_count += 1;
@@ -211,17 +250,21 @@ impl OkexDerivativesMetricsParser {
                     }
                 }
             }
-            
+
             return parsed_count;
         }
         0
     }
-    
-    fn parse_mark_price_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+
+    fn parse_mark_price_data(
+        &self,
+        json_value: &serde_json::Value,
+        sender: &broadcast::Sender<Bytes>,
+    ) -> usize {
         // Parse mark price data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
-            
+
             for data_item in data_array {
                 if let (Some(inst_id), Some(mark_px_str), Some(timestamp_str)) = (
                     data_item.get("instId").and_then(|v| v.as_str()),
@@ -229,17 +272,13 @@ impl OkexDerivativesMetricsParser {
                     data_item.get("ts").and_then(|v| v.as_str()),
                 ) {
                     // Parse mark price and timestamp
-                    if let (Ok(mark_price), Ok(timestamp)) = (
-                        mark_px_str.parse::<f64>(),
-                        timestamp_str.parse::<i64>(),
-                    ) {
+                    if let (Ok(mark_price), Ok(timestamp)) =
+                        (mark_px_str.parse::<f64>(), timestamp_str.parse::<i64>())
+                    {
                         // Create mark price message
-                        let mark_price_msg = MarkPriceMsg::create(
-                            inst_id.to_string(),
-                            mark_price,
-                            timestamp,
-                        );
-                        
+                        let mark_price_msg =
+                            MarkPriceMsg::create(inst_id.to_string(), mark_price, timestamp);
+
                         // Send mark price message
                         if sender.send(mark_price_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
@@ -247,19 +286,28 @@ impl OkexDerivativesMetricsParser {
                     }
                 }
             }
-            
+
             return parsed_count;
         }
         0
     }
-    
-    fn parse_funding_rate_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+
+    fn parse_funding_rate_data(
+        &self,
+        json_value: &serde_json::Value,
+        sender: &broadcast::Sender<Bytes>,
+    ) -> usize {
         // Parse funding rate data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
-            
+
             for data_item in data_array {
-                if let (Some(inst_id), Some(funding_rate_str), Some(next_funding_time_str), Some(timestamp_str)) = (
+                if let (
+                    Some(inst_id),
+                    Some(funding_rate_str),
+                    Some(next_funding_time_str),
+                    Some(timestamp_str),
+                ) = (
                     data_item.get("instId").and_then(|v| v.as_str()),
                     data_item.get("fundingRate").and_then(|v| v.as_str()),
                     data_item.get("nextFundingTime").and_then(|v| v.as_str()),
@@ -278,7 +326,7 @@ impl OkexDerivativesMetricsParser {
                             next_funding_time,
                             timestamp,
                         );
-                        
+
                         // Send funding rate message
                         if sender.send(funding_rate_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
@@ -286,17 +334,21 @@ impl OkexDerivativesMetricsParser {
                     }
                 }
             }
-            
+
             return parsed_count;
         }
         0
     }
-    
-    fn parse_index_price_data(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+
+    fn parse_index_price_data(
+        &self,
+        json_value: &serde_json::Value,
+        sender: &broadcast::Sender<Bytes>,
+    ) -> usize {
         // Parse index price data array
         if let Some(data_array) = json_value.get("data").and_then(|v| v.as_array()) {
             let mut parsed_count = 0;
-            
+
             for data_item in data_array {
                 if let (Some(inst_id), Some(idx_px_str), Some(timestamp_str)) = (
                     data_item.get("instId").and_then(|v| v.as_str()),
@@ -304,17 +356,13 @@ impl OkexDerivativesMetricsParser {
                     data_item.get("ts").and_then(|v| v.as_str()),
                 ) {
                     // Parse index price and timestamp
-                    if let (Ok(index_price), Ok(timestamp)) = (
-                        idx_px_str.parse::<f64>(),
-                        timestamp_str.parse::<i64>(),
-                    ) {
+                    if let (Ok(index_price), Ok(timestamp)) =
+                        (idx_px_str.parse::<f64>(), timestamp_str.parse::<i64>())
+                    {
                         // Create index price message
-                        let index_price_msg = IndexPriceMsg::create(
-                            inst_id.to_string(),
-                            index_price,
-                            timestamp,
-                        );
-                        
+                        let index_price_msg =
+                            IndexPriceMsg::create(inst_id.to_string(), index_price, timestamp);
+
                         // Send index price message
                         if sender.send(index_price_msg.to_bytes()).is_ok() {
                             parsed_count += 1;
@@ -322,7 +370,7 @@ impl OkexDerivativesMetricsParser {
                     }
                 }
             }
-            
+
             return parsed_count;
         }
         0
@@ -355,15 +403,26 @@ impl Parser for OkexTradeParser {
 }
 
 impl OkexTradeParser {
-    fn parse_trade_event(&self, trade_data: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_trade_event(
+        &self,
+        trade_data: &serde_json::Value,
+        sender: &broadcast::Sender<Bytes>,
+    ) -> usize {
         // Extract trade data from OKEx trade message
-        if let (Some(symbol), Some(trade_id_str), Some(price_str), Some(size_str), Some(side_str), Some(timestamp_str)) = (
-            trade_data.get("instId").and_then(|v| v.as_str()),       // 交易对
-            trade_data.get("tradeId").and_then(|v| v.as_str()),      // 交易ID
-            trade_data.get("px").and_then(|v| v.as_str()),           // 成交价格
-            trade_data.get("sz").and_then(|v| v.as_str()),           // 成交数量
-            trade_data.get("side").and_then(|v| v.as_str()),         // 买卖方向
-            trade_data.get("ts").and_then(|v| v.as_str()),           // 时间戳
+        if let (
+            Some(symbol),
+            Some(trade_id_str),
+            Some(price_str),
+            Some(size_str),
+            Some(side_str),
+            Some(timestamp_str),
+        ) = (
+            trade_data.get("instId").and_then(|v| v.as_str()), // 交易对
+            trade_data.get("tradeId").and_then(|v| v.as_str()), // 交易ID
+            trade_data.get("px").and_then(|v| v.as_str()),     // 成交价格
+            trade_data.get("sz").and_then(|v| v.as_str()),     // 成交数量
+            trade_data.get("side").and_then(|v| v.as_str()),   // 买卖方向
+            trade_data.get("ts").and_then(|v| v.as_str()),     // 时间戳
         ) {
             // Parse price, size, trade_id and timestamp
             if let (Ok(price), Ok(amount), Ok(trade_id), Ok(timestamp)) = (
@@ -376,7 +435,7 @@ impl OkexTradeParser {
                 if price <= 0.0 || amount <= 0.0 {
                     return 0;
                 }
-                
+
                 // Convert OKEx side to char
                 let side = match side_str {
                     "sell" => 'S',
@@ -386,17 +445,11 @@ impl OkexTradeParser {
                         return 0;
                     }
                 };
-                
+
                 // Create trade message
-                let trade_msg = TradeMsg::create(
-                    symbol.to_string(),
-                    trade_id,
-                    timestamp,
-                    side,
-                    price,
-                    amount,
-                );
-                
+                let trade_msg =
+                    TradeMsg::create(symbol.to_string(), trade_id, timestamp, side, price, amount);
+
                 // Send trade message
                 if sender.send(trade_msg.to_bytes()).is_ok() {
                     return 1;
@@ -417,25 +470,23 @@ fn parse_okex_order_book_levels(
     for (i, bid_item) in bids_array.iter().enumerate() {
         if let Some(bid_array) = bid_item.as_array() {
             if bid_array.len() >= 2 {
-                if let (Some(price_str), Some(amount_str)) = (
-                    bid_array[0].as_str(),
-                    bid_array[1].as_str(),
-                ) {
+                if let (Some(price_str), Some(amount_str)) =
+                    (bid_array[0].as_str(), bid_array[1].as_str())
+                {
                     let level = Level::new(price_str, amount_str);
                     inc_msg.set_bid_level(i, level);
                 }
             }
         }
     }
-    
+
     // 解析asks - OKEx格式：[price, amount, deprecated, order_count]
     for (i, ask_item) in asks_array.iter().enumerate() {
         if let Some(ask_array) = ask_item.as_array() {
             if ask_array.len() >= 2 {
-                if let (Some(price_str), Some(amount_str)) = (
-                    ask_array[0].as_str(),
-                    ask_array[1].as_str(),
-                ) {
+                if let (Some(price_str), Some(amount_str)) =
+                    (ask_array[0].as_str(), ask_array[1].as_str())
+                {
                     let level = Level::new(price_str, amount_str);
                     inc_msg.set_ask_level(i, level);
                 }
@@ -472,14 +523,24 @@ impl Parser for OkexIncParser {
 }
 
 impl OkexIncParser {
-    fn parse_orderbook_event(&self, json_value: &serde_json::Value, sender: &broadcast::Sender<Bytes>) -> usize {
+    fn parse_orderbook_event(
+        &self,
+        json_value: &serde_json::Value,
+        sender: &broadcast::Sender<Bytes>,
+    ) -> usize {
         // 从OKEx订单簿数据中提取信息
         if let (Some(action), Some(data_array)) = (
             json_value.get("action").and_then(|v| v.as_str()),
             json_value.get("data").and_then(|v| v.as_array()),
         ) {
             if let Some(data) = data_array.first() {
-                if let (Some(bids_array), Some(asks_array), Some(seq_id), Some(prev_seq_id), Some(timestamp_str)) = (
+                if let (
+                    Some(bids_array),
+                    Some(asks_array),
+                    Some(seq_id),
+                    Some(prev_seq_id),
+                    Some(timestamp_str),
+                ) = (
                     data.get("bids").and_then(|v| v.as_array()),
                     data.get("asks").and_then(|v| v.as_array()),
                     data.get("seqId").and_then(|v| v.as_i64()),
@@ -491,35 +552,37 @@ impl OkexIncParser {
                         Ok(ts) => ts,
                         Err(_) => return 0,
                     };
-                    
+
                     // 从arg中获取symbol
-                    let symbol = match json_value.get("arg")
+                    let symbol = match json_value
+                        .get("arg")
                         .and_then(|arg| arg.get("instId"))
-                        .and_then(|v| v.as_str()) {
+                        .and_then(|v| v.as_str())
+                    {
                         Some(s) => s.to_string(),
                         None => return 0,
                     };
-                    
+
                     let bids_count = bids_array.len() as u32;
                     let asks_count = asks_array.len() as u32;
-                    
+
                     // 判断是否为快照消息
                     let is_snapshot = action == "snapshot";
-                    
+
                     // 创建增量/快照消息
                     let mut inc_msg = IncMsg::create(
                         symbol,
-                        seq_id,             // first_update_id
-                        prev_seq_id,        // final_update_id 
-                        timestamp,          // 使用ts时间戳
-                        is_snapshot,        // 根据action字段确定
+                        seq_id,      // first_update_id
+                        prev_seq_id, // final_update_id
+                        timestamp,   // 使用ts时间戳
+                        is_snapshot, // 根据action字段确定
                         bids_count,
                         asks_count,
                     );
-                    
+
                     // 使用公共函数解析订单簿层级
                     parse_okex_order_book_levels(bids_array, asks_array, &mut inc_msg);
-                    
+
                     // 发送消息
                     if sender.send(inc_msg.to_bytes()).is_ok() {
                         return 1;

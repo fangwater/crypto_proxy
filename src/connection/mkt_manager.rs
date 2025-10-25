@@ -1,18 +1,20 @@
 use crate::cfg::Config;
-use crate::sub_msg::SubscribeMsgs;
-use crate::parser::default_parser::{Parser};
-use crate::parser::binance_parser::{BinanceSignalParser, BinanceTradeParser, BinanceSnapshotParser, BinanceIncParser};
-use crate::parser::okex_parser::{OkexSignalParser, OkexTradeParser, OkexIncParser};
-use crate::parser::bybit_parser::{BybitSignalParser, BybitTradeParser, BybitIncParser};
-use crate::connection::connection::construct_connection;
 use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
+use crate::connection::connection::construct_connection;
+use crate::parser::binance_parser::{
+    BinanceIncParser, BinanceSignalParser, BinanceSnapshotParser, BinanceTradeParser,
+};
+use crate::parser::bybit_parser::{BybitIncParser, BybitSignalParser, BybitTradeParser};
+use crate::parser::default_parser::Parser;
+use crate::parser::okex_parser::{OkexIncParser, OkexSignalParser, OkexTradeParser};
+use crate::sub_msg::SubscribeMsgs;
+use bytes::Bytes;
+use chrono::{NaiveTime, TimeDelta, Utc};
+use log::{error, info};
+use std::sync::Arc;
 use tokio::sync::{broadcast, watch, Notify};
 use tokio::task::JoinSet;
-use bytes::Bytes;
-use log::{info, error};
-use std::sync::Arc;
 use tokio::time::{Duration, Instant};
-use chrono::{Utc, TimeDelta, NaiveTime};
 
 //订阅逐笔行情，orderbook增量消息，通过parser处理后转发
 
@@ -34,48 +36,51 @@ pub fn next_target_instant(time_str: &str) -> Instant {
     // 获取当前UTC时间
     let now = Utc::now();
     let now_naive = now.naive_utc();
-    
+
     // 构造今天的目标时间
     let today_target = now.date_naive().and_time(target_time);
-    
+
     // 计算目标时间（如果已过今天就取明天）
     let target = if now_naive < today_target {
         today_target
     } else {
         today_target + TimeDelta::days(1)
     };
-    
+
     // 计算需要等待的时间长度
     let sleep_duration = target - now_naive;
-    
+
     // 转换为std::time::Duration
     let sleep_std = sleep_duration.to_std().unwrap();
-    
+
     // 返回目标时刻的tokio Instant
     Instant::now() + sleep_std
 }
 
 pub struct MktDataConnectionManager {
-    cfg: Config, //进程基本参数
-    subscribe_msgs: SubscribeMsgs, //所有的订阅消息
-    mkt_tx: broadcast::Sender<Bytes>, //行情消息转发通道（包含signal）
+    cfg: Config,                               //进程基本参数
+    subscribe_msgs: SubscribeMsgs,             //所有的订阅消息
+    mkt_tx: broadcast::Sender<Bytes>,          //行情消息转发通道（包含signal）
     global_shutdown_rx: watch::Receiver<bool>, //全局关闭信号
-    tp_reset_notify: Arc<Notify>, //tp重置消息通知
-    join_set: JoinSet<()>, //任务集合
+    tp_reset_notify: Arc<Notify>,              //tp重置消息通知
+    join_set: JoinSet<()>,                     //任务集合
 }
 
-
 impl MktDataConnectionManager {
-    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>, mkt_tx: broadcast::Sender<Bytes>) -> Self {
+    pub async fn new(
+        cfg: &Config,
+        global_shutdown: &watch::Sender<bool>,
+        mkt_tx: broadcast::Sender<Bytes>,
+    ) -> Self {
         let subscribe_msgs = SubscribeMsgs::new(&cfg).await;
         Self {
             cfg: cfg.clone(),
-            subscribe_msgs : subscribe_msgs,
+            subscribe_msgs: subscribe_msgs,
             mkt_tx: mkt_tx,
             global_shutdown_rx: global_shutdown.subscribe(),
             tp_reset_notify: Arc::new(Notify::new()),
             join_set: JoinSet::new(),
-        }   
+        }
     }
     pub fn get_tp_reset_notify(&self) -> Arc<Notify> {
         self.tp_reset_notify.clone()
@@ -94,17 +99,16 @@ impl MktDataConnectionManager {
         Ok(())
     }
 
-    
     pub async fn start_snapshot_task(&mut self) {
         let exchange = self.cfg.get_exchange().clone();
         let is_primary = self.cfg.is_primary;
-        
+
         // Only start snapshot task for Binance exchanges and primary nodes
         if (exchange != "binance-futures" && exchange != "binance") || !is_primary {
             info!("跳过快照任务 - 非币安交易所或非主节点");
             return;
         }
-        
+
         let snapshot_requery_time = match self.cfg.snapshot_requery_time.as_ref() {
             Some(time) if !time.is_empty() => time.clone(),
             _ => {
@@ -112,11 +116,11 @@ impl MktDataConnectionManager {
                 return;
             }
         };
-        
+
         let cfg_clone = self.cfg.clone();
         let mut global_shutdown_rx = self.global_shutdown_rx.clone();
         let mkt_tx = self.mkt_tx.clone();
-        
+
         self.join_set.spawn(async move {
             let mut next_snapshot_query_instant = next_target_instant(&snapshot_requery_time);
             
@@ -147,7 +151,13 @@ impl MktDataConnectionManager {
                                         return;
                                     }
                                 };
-                                BinanceFuturesSnapshotQuery::start_fetching_depth(exchange_for_fetcher.as_str(), symbols, snapshot_tx_for_fetcher).await;
+                                let rest_cfg = cfg_for_fetcher.binance_rest.clone();
+                                BinanceFuturesSnapshotQuery::start_fetching_depth(
+                                    exchange_for_fetcher.as_str(),
+                                    rest_cfg,
+                                    symbols,
+                                    snapshot_tx_for_fetcher
+                                ).await;
                                 info!("为 {} 成功查询深度快照", exchange_for_fetcher);
                             });
                             
@@ -176,46 +186,88 @@ impl MktDataConnectionManager {
             let exchange = self.cfg.get_exchange().clone();
             let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
             let subscribe_msg = self.subscribe_msgs.get_inc_subscribe_msg(i).clone();
-            
+
             // Create inc parser based on exchange (static dispatch for performance)
             match exchange.as_str() {
                 "binance-futures" | "binance" => {
                     let parser = BinanceIncParser::new();
-                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("inc msg batch {}", i), parser).await;
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("inc msg batch {}", i),
+                        parser,
+                    )
+                    .await;
                 }
                 "bybit" | "bybit-spot" => {
                     let parser = BybitIncParser::new();
-                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("inc msg batch {}", i), parser).await;
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("inc msg batch {}", i),
+                        parser,
+                    )
+                    .await;
                 }
                 "okex-swap" | "okex" => {
                     let parser = OkexIncParser::new();
-                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("inc msg batch {}", i), parser).await;
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("inc msg batch {}", i),
+                        parser,
+                    )
+                    .await;
                 }
                 _ => {
                     panic!("Unsupported exchange for trade parser: {}", exchange);
                 }
             }
         }
-    
+
         // 2. 启动所有交易连接
         for i in 0..self.subscribe_msgs.get_trade_subscribe_msg_len() {
             let exchange = self.cfg.get_exchange().clone();
             let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
             let subscribe_msg = self.subscribe_msgs.get_trade_subscribe_msg(i).clone();
-            
+
             // Create trade parser based on exchange (static dispatch for performance)
             match exchange.as_str() {
                 "binance-futures" | "binance" => {
                     let parser = BinanceTradeParser::new();
-                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("trade msg batch {}", i), parser).await;
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("trade msg batch {}", i),
+                        parser,
+                    )
+                    .await;
                 }
                 "bybit" | "bybit-spot" => {
                     let parser = BybitTradeParser::new();
-                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("trade msg batch {}", i), parser).await;
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("trade msg batch {}", i),
+                        parser,
+                    )
+                    .await;
                 }
                 "okex-swap" | "okex" => {
-                    let parser  = OkexTradeParser::new();
-                    self.spawn_mkt_connection_typed(exchange, url, subscribe_msg, format!("trade msg batch {}", i), parser).await;
+                    let parser = OkexTradeParser::new();
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("trade msg batch {}", i),
+                        parser,
+                    )
+                    .await;
                 }
                 _ => {
                     error!("Unsupported exchange for trade parser: {}", exchange);
@@ -223,16 +275,16 @@ impl MktDataConnectionManager {
                 }
             };
         }
-        
+
         self.notify_tp_reset();
-        
+
         // 3、启动独立的时间信号源连接
         let exchange = self.cfg.get_exchange().clone();
 
         // 如果是币安且为主机，额外启动快照query
         let url = crate::sub_msg::SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
         let signal_subscribe_msg = self.subscribe_msgs.get_time_signal_subscribe_msg();
-        
+
         // Create signal parser based on exchange
         let signal_parser: Box<dyn Parser> = match exchange.as_str() {
             "binance-futures" | "binance" => Box::new(BinanceSignalParser::new(false)),
@@ -243,15 +295,25 @@ impl MktDataConnectionManager {
                 return;
             }
         };
-        
-        self.spawn_mkt_connection(exchange, url, signal_subscribe_msg, "time signal".to_string(), signal_parser).await;
+
+        self.spawn_mkt_connection(
+            exchange,
+            url,
+            signal_subscribe_msg,
+            "time signal".to_string(),
+            signal_parser,
+        )
+        .await;
 
         // 4. 启动币安快照查询任务（仅主节点且为币安交易所）
         self.start_snapshot_task().await;
-    
+
         log::info!("All connections started...");
     }
-    pub async fn shutdown(&mut self, global_shutdown: &watch::Sender<bool>) -> Result<(), Box<dyn std::error::Error>>{
+    pub async fn shutdown(
+        &mut self,
+        global_shutdown: &watch::Sender<bool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // 发送全局关闭信号
         if let Err(e) = global_shutdown.send(true) {
             error!("Failed to shutdown MktConnectionManager: {}", e);
@@ -269,13 +331,19 @@ impl MktDataConnectionManager {
     }
 
     // 泛型版本的连接函数，避免动态分发开销
-    async fn spawn_mkt_connection_typed<P>(&mut self, exchange: String, url: String, subscribe_msg: serde_json::Value, description: String, parser: P) 
-    where 
+    async fn spawn_mkt_connection_typed<P>(
+        &mut self,
+        exchange: String,
+        url: String,
+        subscribe_msg: serde_json::Value,
+        description: String,
+        parser: P,
+    ) where
         P: Parser + Send + 'static,
     {
         let mkt_tx = self.mkt_tx.clone();
         let global_shutdown_rx = self.global_shutdown_rx.clone();
-        
+
         self.join_set.spawn(async move {
             // Create intermediate channel for raw WebSocket data
             let (raw_tx, mut raw_rx) = broadcast::channel(8192);
@@ -345,10 +413,17 @@ impl MktDataConnectionManager {
         });
     }
 
-    async fn spawn_mkt_connection(&mut self, exchange: String, url: String, subscribe_msg: serde_json::Value, description: String, parser: Box<dyn Parser>) {
+    async fn spawn_mkt_connection(
+        &mut self,
+        exchange: String,
+        url: String,
+        subscribe_msg: serde_json::Value,
+        description: String,
+        parser: Box<dyn Parser>,
+    ) {
         let mkt_tx = self.mkt_tx.clone();
         let global_shutdown_rx = self.global_shutdown_rx.clone();
-        
+
         self.join_set.spawn(async move {
             // Create intermediate channel for raw WebSocket data
             let (raw_tx, mut raw_rx) = broadcast::channel(8192);

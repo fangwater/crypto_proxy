@@ -1,18 +1,18 @@
-mod connection;
-mod sub_msg;
+mod app;
 mod cfg;
+mod connection;
 mod forwarder;
 mod mkt_msg;
 mod parser;
 mod proxy;
 mod receiver;
 mod restart_checker;
-mod app;
-use cfg::Config;
+mod sub_msg;
 use app::CryptoProxyApp;
-use tokio::sync::OnceCell;
+use cfg::Config;
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
+use tokio::sync::OnceCell;
 
 #[derive(Clone, Debug, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -31,7 +31,6 @@ enum Exchange {
     BybitSpot,
 }
 
-
 #[derive(Parser)]
 #[command(name = "crypto_proxy")]
 #[command(about = "Cryptocurrency market data proxy")]
@@ -49,20 +48,19 @@ async fn main() -> anyhow::Result<()> {
     // 解析命令行参数
     let args = Args::parse();
     let exchange = args.exchange;
-    
+
     // 固定配置文件路径
     let config_path = "mkt_cfg.yaml";
 
     static CFG: OnceCell<Config> = OnceCell::const_new();
 
     async fn get_config(config_path: &str, exchange: Exchange) -> &'static Config {
-        CFG.get_or_init(|| async {
-            Config::load_config(config_path, exchange).await.unwrap()
-        }).await
+        CFG.get_or_init(|| async { Config::load_config(config_path, exchange).await.unwrap() })
+            .await
     }
-    
+
     let config = get_config(config_path, exchange).await;
-    
+
     // 创建并运行应用
     let app = CryptoProxyApp::new(config).await?;
     app.run().await

@@ -1,14 +1,14 @@
 use crate::cfg::Config;
-use crate::sub_msg::SubscribeMsgs;
+use crate::connection::connection::construct_connection;
 use crate::parser::binance_parser::BinanceKlineParser;
-use crate::parser::okex_parser::OkexKlineParser;
 use crate::parser::bybit_parser::BybitKlineParser;
 use crate::parser::default_parser::Parser;
-use crate::connection::connection::construct_connection;
+use crate::parser::okex_parser::OkexKlineParser;
+use crate::sub_msg::SubscribeMsgs;
+use bytes::Bytes;
+use log::{error, info};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
-use bytes::Bytes;
-use log::{info, error};
 
 pub struct KlineDataConnectionManager {
     cfg: Config,
@@ -19,7 +19,11 @@ pub struct KlineDataConnectionManager {
 }
 
 impl KlineDataConnectionManager {
-    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>, kline_tx: broadcast::Sender<Bytes>) -> Self {
+    pub async fn new(
+        cfg: &Config,
+        global_shutdown: &watch::Sender<bool>,
+        kline_tx: broadcast::Sender<Bytes>,
+    ) -> Self {
         let subscribe_msgs = SubscribeMsgs::new(&cfg).await;
         Self {
             cfg: cfg.clone(),
@@ -27,22 +31,27 @@ impl KlineDataConnectionManager {
             kline_tx,
             global_shutdown_rx: global_shutdown.subscribe(),
             join_set: JoinSet::new(),
-        }   
+        }
     }
 
     pub async fn start_all_kline_connections(&mut self) {
         let kline_msg_len = self.subscribe_msgs.get_kline_subscribe_msg_len();
         for i in 0..kline_msg_len {
             let exchange = self.cfg.get_exchange().clone();
-            let url = crate::sub_msg::SubscribeMsgs::get_exchange_kline_data_url(&exchange).to_string();
+            let url =
+                crate::sub_msg::SubscribeMsgs::get_exchange_kline_data_url(&exchange).to_string();
             let subscribe_msg = self.subscribe_msgs.get_kline_subscribe_msg(i).clone();
-            
-            self.spawn_kline_connection(exchange, url, subscribe_msg, format!("kline batch {}", i)).await;
+
+            self.spawn_kline_connection(exchange, url, subscribe_msg, format!("kline batch {}", i))
+                .await;
         }
         log::info!("All kline connections started...");
     }
 
-    pub async fn shutdown(&mut self, global_shutdown: &watch::Sender<bool>) -> Result<(), Box<dyn std::error::Error>>{
+    pub async fn shutdown(
+        &mut self,
+        global_shutdown: &watch::Sender<bool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = global_shutdown.send(true) {
             error!("Failed to shutdown KlineDataConnectionManager: {}", e);
         }
@@ -57,22 +66,22 @@ impl KlineDataConnectionManager {
         Ok(())
     }
 
-
     /// 根据交易所类型构造 Kline parser
-    async fn construct_kline_parser(&self, exchange: &str) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
+    async fn construct_kline_parser(
+        &self,
+        exchange: &str,
+    ) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
         match exchange {
-            "binance-futures" => {
-                Ok(Box::new(BinanceKlineParser::new(true)))
-            }
-            "binance" => {
-                Ok(Box::new(BinanceKlineParser::new(false)))
-            }
-            "bybit" | "bybit-spot" => {
-                Ok(Box::new(BybitKlineParser::new()))
-            }
-            "okex-swap" | "okex" => {
-                Ok(Box::new(OkexKlineParser::new()))
-            }
+            "binance-futures" => Ok(Box::new(BinanceKlineParser::new(
+                true,
+                Some(&self.cfg.binance_rest),
+            ))),
+            "binance" => Ok(Box::new(BinanceKlineParser::new(
+                false,
+                Some(&self.cfg.binance_rest),
+            ))),
+            "bybit" | "bybit-spot" => Ok(Box::new(BybitKlineParser::new())),
+            "okex-swap" | "okex" => Ok(Box::new(OkexKlineParser::new())),
             _ => {
                 error!("Unsupported exchange for kline: {}", exchange);
                 Err(format!("Unsupported exchange: {}", exchange).into())
@@ -80,10 +89,16 @@ impl KlineDataConnectionManager {
         }
     }
 
-    async fn spawn_kline_connection(&mut self, exchange: String, url: String, subscribe_msg: serde_json::Value, description: String) {
+    async fn spawn_kline_connection(
+        &mut self,
+        exchange: String,
+        url: String,
+        subscribe_msg: serde_json::Value,
+        description: String,
+    ) {
         let kline_tx = self.kline_tx.clone();
         let global_shutdown_rx = self.global_shutdown_rx.clone();
-        
+
         // Create parser before moving into the async block
         let parser = match self.construct_kline_parser(&exchange).await {
             Ok(p) => p,
@@ -92,18 +107,18 @@ impl KlineDataConnectionManager {
                 return;
             }
         };
-        
+
         self.join_set.spawn(async move {
             // Create intermediate channel for raw WebSocket data
             let (raw_tx, mut raw_rx) = broadcast::channel(8192);
-            
+
             // Spawn WebSocket connection task
             let ws_global_shutdown_rx = global_shutdown_rx.clone();
             let ws_exchange = exchange.clone();
             let ws_url = url.clone();
             let ws_subscribe_msg = subscribe_msg.clone();
             let ws_description = description.clone();
-            
+
             tokio::spawn(async move {
                 let mut connection = match construct_connection(
                     ws_exchange.clone(),
@@ -111,7 +126,7 @@ impl KlineDataConnectionManager {
                     ws_url,
                     ws_subscribe_msg,
                     raw_tx,
-                    ws_global_shutdown_rx
+                    ws_global_shutdown_rx,
                 ) {
                     Ok(c) => c,
                     Err(e) => {
@@ -125,7 +140,7 @@ impl KlineDataConnectionManager {
                     info!("Connection closed for {}", ws_description);
                 }
             });
-            
+
             // Spawn parser task
             let mut shutdown_rx = global_shutdown_rx.clone();
             tokio::spawn(async move {

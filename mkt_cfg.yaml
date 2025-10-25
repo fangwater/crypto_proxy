@@ -15,6 +15,12 @@ binance-futures:
   secondary_addr: "192.168.1.52:15556"
   hwm: 5000
 
+binance_rest:
+  spot_depth_url: "https://data-api.binance.vision/api/v3/depth"
+  futures_depth_url: "https://fapi.binance.com/fapi/v1/depth"
+  premium_index_klines_url: "https://fapi.binance.com/fapi/v1/premiumIndexKlines"
+  open_interest_url: "https://fapi.binance.com/fapi/v1/openInterest"
+
 okex:
   ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"
   primary_addr: "192.168.1.53:15557"

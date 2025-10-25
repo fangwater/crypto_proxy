@@ -23,7 +23,7 @@ impl Parser for DefaultTradeParser {
         //不做任何行为，直接转发，仅标记msg的type
         let mkt_msg = MktMsg::create(MktMsgType::TradeInfo, msg);
         let msg_bytes = mkt_msg.to_bytes();
-        
+
         if let Err(_) = sender.send(msg_bytes) {
             return 0;
         }
@@ -45,11 +45,10 @@ impl Parser for DefaultIncParser {
         //不做任何行为，直接转发，仅标记msg的type
         let mkt_msg = MktMsg::create(MktMsgType::OrderBookInc, msg);
         let msg_bytes = mkt_msg.to_bytes();
-        
+
         if let Err(_) = sender.send(msg_bytes) {
             return 0;
         }
         1
     }
 }
-

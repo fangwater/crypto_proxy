@@ -1,14 +1,14 @@
 //转发器，对收到的消息进行处理，并根据一定的方式转发
-use zmq::{Context, Socket, SocketType};
+use crate::cfg::{Config, ZmqProxyCfg};
 use crate::mkt_msg::MktMsg;
 use bytes::Bytes;
-use crate::cfg::{ZmqProxyCfg, Config};
+use log::{debug, error, info, warn};
 use std::time::Duration;
 use tokio::time::sleep;
-use log::{info, warn, error, debug};
+use zmq::{Context, Socket, SocketType};
 
 //zmq_forwarder,通过ipc和tcp转发消息
-pub struct ZmqForwarder{
+pub struct ZmqForwarder {
     zmq_config: ZmqProxyCfg,
     is_primary: bool,
     #[allow(dead_code)]
@@ -62,23 +62,27 @@ impl ZmqForwarder {
         };
 
         match self.ipc_socket.bind(&ipc_addr) {
-            Ok(_) => {
-                match self.tcp_socket.bind(&bind_addr) {
-                    Ok(_) => {
-                        info!("ZmqForwarder bind success, ipc: {}, tcp: {}, is_primary: {}", 
-                              self.zmq_config.ipc_path, bind_addr, self.is_primary);
-                        Ok(())
-                    }
-                    Err(e) => {
-                        error!("ZmqForwarder TCP bind failed, addr: {}, error: {}", 
-                               bind_addr, e);
-                        Err(e)
-                    }
+            Ok(_) => match self.tcp_socket.bind(&bind_addr) {
+                Ok(_) => {
+                    info!(
+                        "ZmqForwarder bind success, ipc: {}, tcp: {}, is_primary: {}",
+                        self.zmq_config.ipc_path, bind_addr, self.is_primary
+                    );
+                    Ok(())
                 }
-            }
+                Err(e) => {
+                    error!(
+                        "ZmqForwarder TCP bind failed, addr: {}, error: {}",
+                        bind_addr, e
+                    );
+                    Err(e)
+                }
+            },
             Err(e) => {
-                error!("ZmqForwarder IPC connect failed, path: {}, error: {}", 
-                       self.zmq_config.ipc_path, e);
+                error!(
+                    "ZmqForwarder IPC connect failed, path: {}, error: {}",
+                    self.zmq_config.ipc_path, e
+                );
                 Err(e)
             }
         }
@@ -106,7 +110,10 @@ impl ZmqForwarder {
                         // TCP发送失败直接忽略
                         if e == zmq::Error::EAGAIN {
                             self.tcp_dropped += 1;
-                            debug!("TCP send failed (buffer full), dropped: {}", self.tcp_dropped);
+                            debug!(
+                                "TCP send failed (buffer full), dropped: {}",
+                                self.tcp_dropped
+                            );
                         } else {
                             debug!("TCP send error: {}", e);
                         }
@@ -117,7 +124,10 @@ impl ZmqForwarder {
                 if e == zmq::Error::EAGAIN {
                     // PUB模式下EAGAIN通常是缓冲区满，重试无意义，直接丢弃
                     self.ipc_dropped += 1;
-                    debug!("IPC send failed (buffer full), dropped: {}", self.ipc_dropped);
+                    debug!(
+                        "IPC send failed (buffer full), dropped: {}",
+                        self.ipc_dropped
+                    );
                 } else {
                     // 其他错误
                     warn!("IPC send error: {}", e);
@@ -127,13 +137,13 @@ impl ZmqForwarder {
 
         ipc_success
     }
-    
+
     pub async fn send_tp_reset_msg(&mut self) -> bool {
         let tp_reset_msg = MktMsg::tp_reset();
         let msg_bytes = tp_reset_msg.to_bytes();
-        
+
         info!("Sending tp reset message...");
-        
+
         // 每隔3s重试，一直到ipc成功发送
         loop {
             match self.ipc_socket.send(&msg_bytes[..], zmq::DONTWAIT) {
@@ -155,7 +165,7 @@ impl ZmqForwarder {
         // 打印统计信息
         info!("stats: ipc_count: {}, tcp_count: {}, ipc_dropped: {}, tcp_dropped: {}, total_messages: {}", 
               self.ipc_count, self.tcp_count, self.ipc_dropped, self.tcp_dropped, self.message_count);
-        
+
         // 清零所有统计信息
         self.ipc_count = 0;
         self.tcp_count = 0;
@@ -168,12 +178,12 @@ impl ZmqForwarder {
 impl Drop for ZmqForwarder {
     fn drop(&mut self) {
         info!("ZmqForwarder stopping...");
-        
+
         // 关闭socket
         let _ = self.ipc_socket.set_linger(0); // 立即关闭，不等待未发送的消息
         let _ = self.tcp_socket.set_linger(0);
         info!("ZmqForwarder sockets configured for immediate close");
-        
+
         info!("ZmqForwarder stop success");
     }
 }

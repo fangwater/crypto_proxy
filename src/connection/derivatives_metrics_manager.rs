@@ -1,14 +1,14 @@
 use crate::cfg::Config;
+use crate::connection::connection::construct_connection;
 use crate::parser::binance_parser::BinanceDerivativesMetricsParser;
-use crate::parser::okex_parser::OkexDerivativesMetricsParser;
 use crate::parser::bybit_parser::BybitDerivativesMetricsParser;
 use crate::parser::default_parser::Parser;
+use crate::parser::okex_parser::OkexDerivativesMetricsParser;
 use crate::sub_msg::DerivativesMetricsSubscribeMsgs;
-use crate::connection::connection::construct_connection;
+use bytes::Bytes;
+use log::{error, info};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinSet;
-use bytes::Bytes;
-use log::{info, error};
 
 //订阅衍生品相关数据
 pub struct DerivativesMetricsDataConnectionManager {
@@ -20,7 +20,11 @@ pub struct DerivativesMetricsDataConnectionManager {
 }
 
 impl DerivativesMetricsDataConnectionManager {
-    pub async fn new(cfg: &Config, global_shutdown: &watch::Sender<bool>, metrics_tx: broadcast::Sender<Bytes>) -> Self {
+    pub async fn new(
+        cfg: &Config,
+        global_shutdown: &watch::Sender<bool>,
+        metrics_tx: broadcast::Sender<Bytes>,
+    ) -> Self {
         let subscribe_msgs = DerivativesMetricsSubscribeMsgs::new(&cfg).await;
         Self {
             cfg: cfg.clone(),
@@ -28,7 +32,7 @@ impl DerivativesMetricsDataConnectionManager {
             metrics_tx,
             global_shutdown_rx: global_shutdown.subscribe(),
             join_set: JoinSet::new(),
-        }   
+        }
     }
 
     pub async fn start_all_derivatives_connections(&mut self) {
@@ -47,102 +51,156 @@ impl DerivativesMetricsDataConnectionManager {
         log::info!("All derivatives metrics connections started...");
     }
 
-    async fn start_binance_connections(&mut self, msgs: &crate::sub_msg::BinancePerpsSubscribeMsgs) {
+    async fn start_binance_connections(
+        &mut self,
+        msgs: &crate::sub_msg::BinancePerpsSubscribeMsgs,
+    ) {
         let exchange = self.cfg.get_exchange().clone();
         let url = crate::sub_msg::BinancePerpsSubscribeMsgs::WS_URL.to_string();
-        
-        info!("Starting Binance derivatives connections for exchange: {}", exchange);
+
+        info!(
+            "Starting Binance derivatives connections for exchange: {}",
+            exchange
+        );
         info!("Binance derivatives WebSocket URL: {}", url);
         info!("Initializing {} Binance derivatives streams", 2);
-        
+
         info!("Starting Binance mark price stream (全市场标记价格、资金费率、指数价格)");
-        self.spawn_connection(exchange.clone(), url.clone(), msgs.mark_price_stream_for_all_market.clone(), "binance mark price".to_string()).await;
-        
+        self.spawn_connection(
+            exchange.clone(),
+            url.clone(),
+            msgs.mark_price_stream_for_all_market.clone(),
+            "binance mark price".to_string(),
+        )
+        .await;
+
         info!("Starting Binance liquidation orders stream (强平信息)");
-        self.spawn_connection(exchange.clone(), url.clone(), msgs.liquidation_orders_msg.clone(), "binance liquidation orders".to_string()).await;
-        
+        self.spawn_connection(
+            exchange.clone(),
+            url.clone(),
+            msgs.liquidation_orders_msg.clone(),
+            "binance liquidation orders".to_string(),
+        )
+        .await;
+
         info!("Binance derivatives connections initialization completed");
     }
 
     async fn start_okex_connections(&mut self, msgs: &crate::sub_msg::OkexPerpsSubscribeMsgs) {
         let exchange = self.cfg.get_exchange().clone();
         let url = crate::sub_msg::OkexPerpsSubscribeMsgs::WS_URL.to_string();
-        
-        info!("Starting OKEx derivatives connections for exchange: {}", exchange);
+
+        info!(
+            "Starting OKEx derivatives connections for exchange: {}",
+            exchange
+        );
         info!("OKEx derivatives WebSocket URL: {}", url);
         info!("Initializing {} OKEx unified derivatives streams (包含标记价格、指数价格、资金费率、强平信息)", msgs.unified_perps_msgs.len());
-        
+
         for (i, unified_msg) in msgs.unified_perps_msgs.iter().enumerate() {
             self.spawn_connection(
-                exchange.clone(), 
-                url.clone(), 
-                unified_msg.clone(), 
-                format!("okex unified derivatives batch {}", i)
-            ).await;
+                exchange.clone(),
+                url.clone(),
+                unified_msg.clone(),
+                format!("okex unified derivatives batch {}", i),
+            )
+            .await;
         }
-        
+
         info!("OKEx derivatives connections initialization completed");
     }
 
     async fn start_bybit_connections(&mut self, msgs: &crate::sub_msg::BybitPerpsSubscribeMsgs) {
         let exchange = self.cfg.get_exchange().clone();
         let url = crate::sub_msg::BybitPerpsSubscribeMsgs::WS_URL.to_string();
-        
+
         let total_streams = msgs.ticker_stream_msgs.len() + msgs.liquidation_orders_msgs.len();
-        info!("Starting Bybit derivatives connections for exchange: {}", exchange);
+        info!(
+            "Starting Bybit derivatives connections for exchange: {}",
+            exchange
+        );
         info!("Bybit derivatives WebSocket URL: {}", url);
-        info!("Initializing {} Bybit derivatives streams total", total_streams);
-        
-        info!("Starting {} Bybit ticker streams (标记价格、指数价格、资金费率)", msgs.ticker_stream_msgs.len());
+        info!(
+            "Initializing {} Bybit derivatives streams total",
+            total_streams
+        );
+
+        info!(
+            "Starting {} Bybit ticker streams (标记价格、指数价格、资金费率)",
+            msgs.ticker_stream_msgs.len()
+        );
         for (i, ticker_msg) in msgs.ticker_stream_msgs.iter().enumerate() {
-            self.spawn_connection(exchange.clone(), url.clone(), ticker_msg.clone(), format!("bybit ticker batch {}", i)).await;
+            self.spawn_connection(
+                exchange.clone(),
+                url.clone(),
+                ticker_msg.clone(),
+                format!("bybit ticker batch {}", i),
+            )
+            .await;
         }
-        
-        info!("Starting {} Bybit liquidation streams (强平信息)", msgs.liquidation_orders_msgs.len());
+
+        info!(
+            "Starting {} Bybit liquidation streams (强平信息)",
+            msgs.liquidation_orders_msgs.len()
+        );
         for (i, liquidation_msg) in msgs.liquidation_orders_msgs.iter().enumerate() {
-            self.spawn_connection(exchange.clone(), url.clone(), liquidation_msg.clone(), format!("bybit liquidation batch {}", i)).await;
+            self.spawn_connection(
+                exchange.clone(),
+                url.clone(),
+                liquidation_msg.clone(),
+                format!("bybit liquidation batch {}", i),
+            )
+            .await;
         }
-        
+
         info!("Bybit derivatives connections initialization completed");
     }
-    async fn construct_parser(&self, exchange: &str) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
+    async fn construct_parser(
+        &self,
+        exchange: &str,
+    ) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
         // 获取 symbol set
         let symbols = self.subscribe_msgs.get_active_symbols();
-        
+
         match exchange {
-            "binance-futures" => {
-                Ok(Box::new(BinanceDerivativesMetricsParser::new(symbols.clone())))
-            }
-            "bybit" => {
-                Ok(Box::new(BybitDerivativesMetricsParser::new()))
-            }
-            "okex-swap" => {
-                Ok(Box::new(OkexDerivativesMetricsParser::new(symbols.clone())))
-            }
+            "binance-futures" => Ok(Box::new(BinanceDerivativesMetricsParser::new(
+                symbols.clone(),
+            ))),
+            "bybit" => Ok(Box::new(BybitDerivativesMetricsParser::new())),
+            "okex-swap" => Ok(Box::new(OkexDerivativesMetricsParser::new(symbols.clone()))),
             _ => {
                 panic!("Unsupported exchange for derivatives metrics: {}", exchange);
             }
         }
     }
 
-    async fn spawn_connection(&mut self, exchange: String, url: String, subscribe_msg: serde_json::Value, description: String) {
+    async fn spawn_connection(
+        &mut self,
+        exchange: String,
+        url: String,
+        subscribe_msg: serde_json::Value,
+        description: String,
+    ) {
         let metrics_tx = self.metrics_tx.clone();
         let global_shutdown_rx = self.global_shutdown_rx.clone();
-        
-        info!("Creating derivatives connection: {} (exchange: {})", description, exchange);
+
+        info!(
+            "Creating derivatives connection: {} (exchange: {})",
+            description, exchange
+        );
         // info!("Subscription message: {}", serde_json::to_string(&subscribe_msg).unwrap_or_else(|_| "invalid json".to_string()));
         // Create parser before moving into the async block
         let parser = match self.construct_parser(&exchange).await {
             Ok(p) => {
                 info!("Parser created successfully for {}", description);
                 p
-            },
+            }
             Err(e) => {
                 error!("Failed to create parser for {}: {}", description, e);
                 return;
             }
         };
-        
+
         info!("Spawning connection task for {}", description);
         let task_description = description.clone();
         let ws_description = description.clone();
@@ -225,13 +283,19 @@ impl DerivativesMetricsDataConnectionManager {
             
             info!("All tasks spawned successfully for {}", task_description);
         });
-        
+
         info!("Connection spawning completed for {}", description);
     }
 
-    pub async fn shutdown(&mut self, global_shutdown: &watch::Sender<bool>) -> Result<(), Box<dyn std::error::Error>>{
+    pub async fn shutdown(
+        &mut self,
+        global_shutdown: &watch::Sender<bool>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = global_shutdown.send(true) {
-            error!("Failed to shutdown DerivativesMetricsDataConnectionManager: {}", e);
+            error!(
+                "Failed to shutdown DerivativesMetricsDataConnectionManager: {}",
+                e
+            );
         }
         let mut join_set = std::mem::take(&mut self.join_set);
         while let Some(result) = join_set.join_next().await {
@@ -244,7 +308,6 @@ impl DerivativesMetricsDataConnectionManager {
         Ok(())
     }
 
-
     pub async fn update_subscribe_msgs(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let prev_symbols = self.subscribe_msgs.get_active_symbols().clone();
         let subscribe_msgs = DerivativesMetricsSubscribeMsgs::new(&self.cfg).await;
@@ -254,6 +317,3 @@ impl DerivativesMetricsDataConnectionManager {
         Ok(())
     }
 }
-
-
-
