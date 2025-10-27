@@ -89,10 +89,11 @@ pub struct BinanceIncSeqNoMsg {
     pub pu: i64,
     pub u: i64,
     pub u_upper: i64,
+    pub timestamp: i64,
 }
 
 impl BinanceIncSeqNoMsg {
-    pub fn create(symbol: String, pu: i64, u: i64, u_upper: i64) -> Self {
+    pub fn create(symbol: String, pu: i64, u: i64, u_upper: i64, timestamp: i64) -> Self {
         let symbol_length = symbol.len() as u32;
         Self {
             msg_type: MktMsgType::BinanceIncSeqNo,
@@ -101,12 +102,13 @@ impl BinanceIncSeqNoMsg {
             pu,
             u,
             u_upper,
+            timestamp,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
-        // msg_type(4) + symbol_length(4) + symbol + pu(8) + u(8) + U(8)
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8;
+        // msg_type(4) + symbol_length(4) + symbol + pu(8) + u(8) + u_upper(8) + timestamp(8)
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 8 + 8 + 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
@@ -115,6 +117,7 @@ impl BinanceIncSeqNoMsg {
         buf.put_i64_le(self.pu);
         buf.put_i64_le(self.u);
         buf.put_i64_le(self.u_upper);
+        buf.put_i64_le(self.timestamp);
 
         buf.freeze()
     }
@@ -553,6 +556,10 @@ pub struct TopLongShortRatioMsg {
     pub top_account_timestamp: i64,
     pub top_position_timestamp: i64,
     pub global_account_timestamp: i64,
+    pub sum_open_interest: f64,
+    pub sum_open_interest_value: f64,
+    pub cmc_circulating_supply: f64,
+    pub open_interest_hist_timestamp: i64,
 }
 
 impl TopLongShortRatioMsg {
@@ -591,12 +598,30 @@ impl TopLongShortRatioMsg {
             top_account_timestamp,
             top_position_timestamp,
             global_account_timestamp,
+            sum_open_interest: 0.0,
+            sum_open_interest_value: 0.0,
+            cmc_circulating_supply: 0.0,
+            open_interest_hist_timestamp: 0,
         }
     }
 
+    pub fn set_open_interest_hist(
+        &mut self,
+        sum_open_interest: f64,
+        sum_open_interest_value: f64,
+        cmc_circulating_supply: f64,
+        timestamp: i64,
+    ) {
+        self.sum_open_interest = sum_open_interest;
+        self.sum_open_interest_value = sum_open_interest_value;
+        self.cmc_circulating_supply = cmc_circulating_supply;
+        self.open_interest_hist_timestamp = timestamp;
+    }
+
     pub fn to_bytes(&self) -> Bytes {
-        // msg_type(4) + symbol_length(4) + symbol + base timestamp(8) + 9*f64 + 3*i64
-        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 9 * 8 + 3 * 8;
+        // msg_type(4) + symbol_length(4) + symbol + base timestamp(8) + 12*f64 + 4*i64
+        let total_size =
+            4 + 4 + self.symbol_length as usize + 8 + 12 * 8 + 4 * 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
@@ -619,6 +644,11 @@ impl TopLongShortRatioMsg {
         buf.put_i64_le(self.top_account_timestamp);
         buf.put_i64_le(self.top_position_timestamp);
         buf.put_i64_le(self.global_account_timestamp);
+
+        buf.put_f64_le(self.sum_open_interest);
+        buf.put_f64_le(self.sum_open_interest_value);
+        buf.put_f64_le(self.cmc_circulating_supply);
+        buf.put_i64_le(self.open_interest_hist_timestamp);
 
         buf.freeze()
     }

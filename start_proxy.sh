@@ -52,10 +52,17 @@ start_single_proxy() {
     pm2 delete "$pm2_name" 2>/dev/null
     
     # 启动新进程
+    local rest_args=()
+    if [[ "$config" == "binance" || "$config" == "binance-futures" ]]; then
+        rest_args+=(--binance-url "http://192.168.1.198:19080")
+        rest_args+=(--binance-futures-url "http://192.168.1.198:19081")
+    fi
+
     pm2 start ./crypto_proxy \
         --name "$pm2_name" \
         -- \
-        --exchange "$config"
+        --exchange "$config" \
+        "${rest_args[@]}"
         
     if [ $? -eq 0 ]; then
         echo "✓ ${config} 代理启动成功"

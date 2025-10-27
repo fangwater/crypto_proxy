@@ -59,6 +59,7 @@ pub struct BinanceKlineParser {
     http_client: Option<reqwest::Client>,
     premium_index_klines_url: Option<String>,
     open_interest_url: Option<String>,
+    open_interest_hist_url: Option<String>,
     top_long_short_account_ratio_url: Option<String>,
     top_long_short_position_ratio_url: Option<String>,
     global_long_short_account_ratio_url: Option<String>,
@@ -73,6 +74,7 @@ impl BinanceKlineParser {
                 http_client: Some(reqwest::Client::new()),
                 premium_index_klines_url: Some(cfg.premium_index_klines_url()),
                 open_interest_url: Some(cfg.open_interest_url()),
+                open_interest_hist_url: Some(cfg.open_interest_hist_url()),
                 top_long_short_account_ratio_url: Some(cfg.top_long_short_account_ratio_url()),
                 top_long_short_position_ratio_url: Some(cfg.top_long_short_position_ratio_url()),
                 global_long_short_account_ratio_url: Some(cfg.global_long_short_account_ratio_url()),
@@ -83,6 +85,7 @@ impl BinanceKlineParser {
                 http_client: None,
                 premium_index_klines_url: None,
                 open_interest_url: None,
+                open_interest_hist_url: None,
                 top_long_short_account_ratio_url: None,
                 top_long_short_position_ratio_url: None,
                 global_long_short_account_ratio_url: None,
@@ -200,6 +203,14 @@ impl Parser for BinanceKlineParser {
                                                 return 0;
                                             }
                                         };
+                                        let open_interest_hist_url =
+                                            match &self.open_interest_hist_url {
+                                                Some(url) => url.clone(),
+                                                None => {
+                                                    error!("Missing Binance futures open interest history URL in configuration");
+                                                    return 0;
+                                                }
+                                            };
                                         let top_account_ratio_url =
                                             match &self.top_long_short_account_ratio_url {
                                                 Some(url) => url.clone(),
@@ -474,41 +485,49 @@ impl Parser for BinanceKlineParser {
                                             let account_url = top_account_ratio_url.clone();
                                             let position_url = top_position_ratio_url.clone();
                                             let global_url = global_account_ratio_url.clone();
+                                            let oi_hist_url = open_interest_hist_url.clone();
                                             tokio::spawn(async move {
-                                            let (account_res, position_res, global_res) = tokio::join!(
-                                                fetch_ratio_metrics(
-                                                    ratio_client.clone(),
-                                                    account_url,
-                                                    ratio_symbol.clone(),
-                                                    "top-account",
-                                                    "longAccount",
-                                                    "shortAccount",
-                                                    close_time
-                                                ),
-                                                fetch_ratio_metrics(
-                                                    ratio_client.clone(),
-                                                    position_url,
-                                                    ratio_symbol.clone(),
-                                                    "top-position",
-                                                    "longPosition",
-                                                    "shortPosition",
-                                                    close_time
-                                                ),
-                                                fetch_ratio_metrics(
-                                                    ratio_client,
-                                                    global_url,
-                                                    ratio_symbol.clone(),
-                                                    "global-account",
-                                                    "longAccount",
-                                                    "shortAccount",
-                                                    close_time
-                                                )
-                                            );
+                                            let (account_res, position_res, global_res, oi_hist_res) =
+                                                tokio::join!(
+                                                    fetch_ratio_metrics(
+                                                        ratio_client.clone(),
+                                                        account_url,
+                                                        ratio_symbol.clone(),
+                                                        "top-account",
+                                                        "longAccount",
+                                                        "shortAccount",
+                                                        close_time
+                                                    ),
+                                                    fetch_ratio_metrics(
+                                                        ratio_client.clone(),
+                                                        position_url,
+                                                        ratio_symbol.clone(),
+                                                        "top-position",
+                                                        "longPosition",
+                                                        "shortPosition",
+                                                        close_time
+                                                    ),
+                                                    fetch_ratio_metrics(
+                                                        ratio_client.clone(),
+                                                        global_url,
+                                                        ratio_symbol.clone(),
+                                                        "global-account",
+                                                        "longAccount",
+                                                        "shortAccount",
+                                                        close_time
+                                                    ),
+                                                    fetch_open_interest_hist(
+                                                        ratio_client,
+                                                        oi_hist_url,
+                                                        ratio_symbol.clone(),
+                                                        close_time
+                                                    )
+                                                );
 
                                                 if let (Ok(account), Ok(position), Ok(global)) =
                                                     (account_res, position_res, global_res)
                                                 {
-                                                    let ratio_msg = TopLongShortRatioMsg::create(
+                                                    let mut ratio_msg = TopLongShortRatioMsg::create(
                                                         ratio_symbol.clone(),
                                                         close_time,
                                                         account.long_value,
@@ -524,6 +543,15 @@ impl Parser for BinanceKlineParser {
                                                         position.timestamp,
                                                         global.timestamp,
                                                     );
+
+                                                    if let Ok(oi_hist) = oi_hist_res {
+                                                        ratio_msg.set_open_interest_hist(
+                                                            oi_hist.sum_open_interest,
+                                                            oi_hist.sum_open_interest_value,
+                                                            oi_hist.cmc_circulating_supply,
+                                                            oi_hist.timestamp,
+                                                        );
+                                                    }
 
                                                     if let Err(err) = ratio_sender.send(ratio_msg.to_bytes()) {
                                                         error!(
@@ -602,7 +630,10 @@ async fn fetch_ratio_metrics(
     let response = match response {
         Ok(resp) => resp,
         Err(err) => {
-            error!("{} request error for {}: {}", label, symbol, err);
+            info!(
+                "{} request error for {}: {}",
+                label, symbol, err
+            );
             return Err(());
         }
     };
@@ -615,7 +646,15 @@ async fn fetch_ratio_metrics(
 
     if !status.is_success() {
         if status != StatusCode::SERVICE_UNAVAILABLE && status != StatusCode::REQUEST_TIMEOUT {
-            error!("{} HTTP {} for {}: {}", label, status, symbol, body);
+            info!(
+                "{} HTTP {} for {}: {}",
+                label, status, symbol, body
+            );
+        } else {
+            info!(
+                "{} temporary HTTP {} for {}",
+                label, status, symbol
+            );
         }
         return Err(());
     }
@@ -623,23 +662,32 @@ async fn fetch_ratio_metrics(
     let entries: Vec<serde_json::Value> = match serde_json::from_str(&body) {
         Ok(value) => value,
         Err(err) => {
-            error!("{} JSON parse error for {}: {}", label, symbol, err);
+            info!(
+                "{} JSON parse error for {}: {}",
+                label, symbol, err
+            );
             return Err(());
         }
     };
 
     if entries.is_empty() {
-        error!("{} response empty for {}", label, symbol);
+        info!("{} response empty for {}", label, symbol);
         return Err(());
     }
 
+    let to_i64 = |value: &serde_json::Value| -> Option<i64> {
+        value
+            .as_i64()
+            .or_else(|| value.as_str()?.parse::<i64>().ok())
+    };
+
     let entry = match entries
         .iter()
-        .find(|entry| entry.get("timestamp").and_then(|v| v.as_i64()) == Some(close_time))
+        .find(|entry| entry.get("timestamp").and_then(|v| to_i64(v)) == Some(close_time))
     {
         Some(entry) => entry,
         None => {
-            error!(
+            info!(
                 "{} missing record for {} at close_time {}",
                 label, symbol, close_time
             );
@@ -657,7 +705,10 @@ async fn fetch_ratio_metrics(
     let long_value = match parse_value(long_key) {
         Some(value) => value,
         None => {
-            error!("{} missing {} for {}", label, long_key, symbol);
+            info!(
+                "{} missing {} for {}",
+                label, long_key, symbol
+            );
             return Err(());
         }
     };
@@ -665,7 +716,10 @@ async fn fetch_ratio_metrics(
     let short_value = match parse_value(short_key) {
         Some(value) => value,
         None => {
-            error!("{} missing {} for {}", label, short_key, symbol);
+            info!(
+                "{} missing {} for {}",
+                label, short_key, symbol
+            );
             return Err(());
         }
     };
@@ -673,20 +727,160 @@ async fn fetch_ratio_metrics(
     let ratio_value = match parse_value("longShortRatio") {
         Some(value) => value,
         None => {
-            error!("{} missing longShortRatio for {}", label, symbol);
+            info!(
+                "{} missing longShortRatio for {}",
+                label, symbol
+            );
             return Err(());
         }
     };
 
     let timestamp = entry
         .get("timestamp")
-        .and_then(|v| v.as_i64())
+        .and_then(|v| to_i64(v))
         .unwrap_or(close_time);
 
     Ok(RatioMetrics {
         long_value,
         short_value,
         ratio_value,
+        timestamp,
+    })
+}
+
+struct OpenInterestHist {
+    sum_open_interest: f64,
+    sum_open_interest_value: f64,
+    cmc_circulating_supply: f64,
+    timestamp: i64,
+}
+
+async fn fetch_open_interest_hist(
+    client: reqwest::Client,
+    url: String,
+    symbol: String,
+    close_time: i64,
+) -> Result<OpenInterestHist, ()> {
+    let response = client
+        .get(url.as_str())
+        .query(&[
+            ("symbol", symbol.as_str()),
+            ("period", "5m"),
+            ("limit", "2"),
+        ])
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+
+    let response = match response {
+        Ok(resp) => resp,
+        Err(err) => {
+            info!(
+                "open-interest-hist request error for {}: {}",
+                symbol, err
+            );
+            return Err(());
+        }
+    };
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "Unable to read response body".to_string());
+
+    if !status.is_success() {
+        if status != StatusCode::SERVICE_UNAVAILABLE && status != StatusCode::REQUEST_TIMEOUT {
+            info!(
+                "open-interest-hist HTTP {} for {}: {}",
+                status, symbol, body
+            );
+        } else {
+            info!(
+                "open-interest-hist temporary HTTP {} for {}",
+                status, symbol
+            );
+        }
+        return Err(());
+    }
+
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(&body) {
+        Ok(value) => value,
+        Err(err) => {
+            info!(
+                "open-interest-hist JSON parse error for {}: {}",
+                symbol, err
+            );
+            return Err(());
+        }
+    };
+
+    if entries.is_empty() {
+        info!("open-interest-hist response empty for {}", symbol);
+        return Err(());
+    }
+
+    let to_i64 = |value: &serde_json::Value| -> Option<i64> {
+        value
+            .as_i64()
+            .or_else(|| value.as_str()?.parse::<i64>().ok())
+    };
+
+    let entry = match entries.iter().find(|entry| {
+        entry
+            .get("timestamp")
+            .and_then(|v| to_i64(v))
+            == Some(close_time)
+    }) {
+        Some(entry) => entry,
+        None => {
+            info!(
+                "open-interest-hist missing record for {} at close_time {}",
+                symbol, close_time
+            );
+            return Err(());
+        }
+    };
+
+    let parse_f64 = |key: &str| -> Option<f64> {
+        entry
+            .get(key)
+            .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse::<f64>().ok()))
+    };
+
+    let sum_open_interest = match parse_f64("sumOpenInterest") {
+        Some(value) => value,
+        None => {
+            info!(
+                "open-interest-hist missing sumOpenInterest for {}",
+                symbol
+            );
+            return Err(());
+        }
+    };
+
+    let sum_open_interest_value = match parse_f64("sumOpenInterestValue") {
+        Some(value) => value,
+        None => {
+            info!(
+                "open-interest-hist missing sumOpenInterestValue for {}",
+                symbol
+            );
+            return Err(());
+        }
+    };
+
+    let cmc_circulating_supply = parse_f64("CMCCirculatingSupply").unwrap_or(0.0);
+
+    let timestamp = entry
+        .get("timestamp")
+        .and_then(|v| to_i64(v))
+        .unwrap_or(close_time);
+
+    Ok(OpenInterestHist {
+        sum_open_interest,
+        sum_open_interest_value,
+        cmc_circulating_supply,
         timestamp,
     })
 }
@@ -1041,6 +1235,7 @@ impl BinanceIncParser {
                 prev_update_id,
                 final_update_id,
                 first_update_id,
+                timestamp,
             );
             if sender.send(seq_msg.to_bytes()).is_ok() {
                 parsed_count += 1;
