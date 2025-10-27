@@ -28,8 +28,8 @@ check_status() {
 # 服务器配置
 # 格式: "IP:角色" (角色: primary 或 secondary)
 SERVERS=(
-    "103.90.136.194:primary"
-    # "103.90.136.195:secondary"
+    # "103.90.136.194:primary"
+    "103.90.136.195:secondary"
     # "103.90.136.196:primary"
     # "103.90.136.197:secondary"
 )

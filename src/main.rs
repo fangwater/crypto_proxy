@@ -38,6 +38,14 @@ struct Args {
     /// Exchange to connect to
     #[arg(short, long)]
     exchange: Exchange,
+
+    /// Override Binance spot REST base URL
+    #[arg(long)]
+    binance_url: Option<String>,
+
+    /// Override Binance futures REST base URL
+    #[arg(long)]
+    binance_futures_url: Option<String>,
 }
 
 #[tokio::main(worker_threads = 4)]
@@ -46,20 +54,45 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     // 解析命令行参数
-    let args = Args::parse();
-    let exchange = args.exchange;
+    let Args {
+        exchange,
+        binance_url,
+        binance_futures_url,
+    } = Args::parse();
 
     // 固定配置文件路径
     let config_path = "mkt_cfg.yaml";
 
     static CFG: OnceCell<Config> = OnceCell::const_new();
 
-    async fn get_config(config_path: &str, exchange: Exchange) -> &'static Config {
-        CFG.get_or_init(|| async { Config::load_config(config_path, exchange).await.unwrap() })
-            .await
+    let mut config = Config::load_config(config_path, exchange.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    match exchange {
+        Exchange::Binance | Exchange::BinanceFutures => {
+            let spot_url = binance_url.ok_or_else(|| {
+                anyhow::anyhow!("--binance-url must be provided for binance exchanges")
+            })?;
+            let futures_url = binance_futures_url.ok_or_else(|| {
+                anyhow::anyhow!("--binance-futures-url must be provided for binance exchanges")
+            })?;
+            config.binance_rest.binance_url = spot_url;
+            config.binance_rest.binance_futures_url = futures_url;
+        }
+        _ => {
+            if let Some(url) = binance_url {
+                config.binance_rest.binance_url = url;
+            }
+            if let Some(url) = binance_futures_url {
+                config.binance_rest.binance_futures_url = url;
+            }
+        }
     }
 
-    let config = get_config(config_path, exchange).await;
+    CFG.set(config)
+        .map_err(|_| anyhow::anyhow!("Config already initialized"))?;
+    let config = CFG.get().expect("config initialized");
 
     // 创建并运行应用
     let app = CryptoProxyApp::new(config).await?;

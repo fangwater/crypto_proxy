@@ -137,10 +137,21 @@ impl Parser for BinanceKlineParser {
                             kline_obj.get("V").and_then(|v| v.as_str()), //主动买入成交量
                             kline_obj.get("Q").and_then(|v| v.as_str()), //主动买入成交额
                         ) {
-                            let close_time = kline_obj
+                            let raw_close_time = kline_obj
                                 .get("T")
                                 .and_then(|v| v.as_i64())
-                                .unwrap_or(timestamp + ONE_MINUTE_MILLIS);
+                                .unwrap_or(timestamp + ONE_MINUTE_MILLIS - 1);
+                            let close_time = align_to_minute(raw_close_time);
+                            if symbol.to_lowercase() == "btcusdt" {
+                                let remainder = close_time % FIVE_MINUTE_MILLIS;
+                                info!(
+                                    "[Binance Kline Debug] symbol={}, raw_close_time={}, aligned_close={}, remainder={}",
+                                    symbol,
+                                    raw_close_time,
+                                    close_time,
+                                    remainder
+                                );
+                            }
                             // 只为BTCUSDT打印OHLCV数据
                             if symbol.to_lowercase() == "btcusdt" {
                                 info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, q={}, t={}, n={}, V={}, Q={}", 
@@ -480,6 +491,12 @@ impl Parser for BinanceKlineParser {
 
                                         if is_five_minute_boundary(close_time) {
                                             let ratio_symbol = symbol.to_string();
+                                            info!(
+                                                "[Binance Ratio Trigger] symbol={} close_time={} remainder={}",
+                                                ratio_symbol,
+                                                close_time,
+                                                close_time % FIVE_MINUTE_MILLIS
+                                            );
                                             let ratio_sender = sender.clone();
                                             let ratio_client = client.clone();
                                             let account_url = top_account_ratio_url.clone();
@@ -487,8 +504,13 @@ impl Parser for BinanceKlineParser {
                                             let global_url = global_account_ratio_url.clone();
                                             let oi_hist_url = open_interest_hist_url.clone();
                                             tokio::spawn(async move {
-                                            let (account_res, position_res, global_res, oi_hist_res) =
-                                                tokio::join!(
+                                                info!(
+                                                    "[Binance Ratio Fetch] start symbol={} close_time={}",
+                                                    ratio_symbol,
+                                                    close_time
+                                                );
+                                                let (account_res, position_res, global_res, oi_hist_res) =
+                                                    tokio::join!(
                                                     fetch_ratio_metrics(
                                                         ratio_client.clone(),
                                                         account_url,
@@ -527,6 +549,11 @@ impl Parser for BinanceKlineParser {
                                                 if let (Ok(account), Ok(position), Ok(global)) =
                                                     (account_res, position_res, global_res)
                                                 {
+                                                    info!(
+                                                        "[Binance Ratio Fetch] success symbol={} close_time={}",
+                                                        ratio_symbol,
+                                                        close_time
+                                                    );
                                                     let mut ratio_msg = TopLongShortRatioMsg::create(
                                                         ratio_symbol.clone(),
                                                         close_time,
@@ -552,6 +579,11 @@ impl Parser for BinanceKlineParser {
                                                             oi_hist.timestamp,
                                                         );
                                                     }
+                                                    info!(
+                                                        "[Binance Ratio Broadcast] symbol={} close_time={}",
+                                                        ratio_symbol,
+                                                        close_time
+                                                    );
 
                                                     if let Err(err) = ratio_sender.send(ratio_msg.to_bytes()) {
                                                         error!(
@@ -601,6 +633,10 @@ struct RatioMetrics {
     short_value: f64,
     ratio_value: f64,
     timestamp: i64,
+}
+
+fn align_to_minute(timestamp: i64) -> i64 {
+    timestamp - (timestamp % ONE_MINUTE_MILLIS)
 }
 
 fn is_five_minute_boundary(timestamp: i64) -> bool {
