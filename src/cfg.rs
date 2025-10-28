@@ -51,10 +51,7 @@ impl BinanceRestCfg {
     }
 
     pub fn open_interest_hist_url(&self) -> String {
-        join_url(
-            &self.binance_futures_url,
-            "futures/data/openInterestHist",
-        )
+        join_url(&self.binance_futures_url, "futures/data/openInterestHist")
     }
 
     pub fn top_long_short_position_ratio_url(&self) -> String {

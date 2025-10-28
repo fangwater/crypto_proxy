@@ -16,6 +16,7 @@ pub enum MktMsgType {
     PremiumIndexKline = 1015,
     BinanceIncSeqNo = 1016,
     BinanceTopLongShortRatio = 1017,
+    RestSummary = 1018,
     Error = 2222,
 }
 
@@ -31,6 +32,96 @@ pub struct MktMsg {
 pub enum SignalSource {
     Ipc = 1,
     Tcp = 2,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum RestRequestType {
+    PremiumIndex = 1,
+    OpenInterest = 2,
+    TopAccount = 3,
+    TopPosition = 4,
+    GlobalAccount = 5,
+    OpenInterestHist = 6,
+}
+
+impl RestRequestType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RestRequestType::PremiumIndex => "premium-index",
+            RestRequestType::OpenInterest => "open-interest",
+            RestRequestType::TopAccount => "top-account",
+            RestRequestType::TopPosition => "top-position",
+            RestRequestType::GlobalAccount => "global-account",
+            RestRequestType::OpenInterestHist => "open-interest-hist",
+        }
+    }
+}
+
+pub struct RestSummaryEntry {
+    pub request_type: RestRequestType,
+    pub success: bool,
+    pub detail: String,
+}
+
+impl RestSummaryEntry {
+    pub fn new(request_type: RestRequestType, success: bool, detail: impl Into<String>) -> Self {
+        Self {
+            request_type,
+            success,
+            detail: detail.into(),
+        }
+    }
+
+    fn detail_len(&self) -> usize {
+        self.detail.as_bytes().len()
+    }
+}
+
+pub struct RestSummaryMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub close_tp: i64,
+    pub results: Vec<RestSummaryEntry>,
+}
+
+impl RestSummaryMsg {
+    pub fn create(symbol: String, close_tp: i64, results: Vec<RestSummaryEntry>) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::RestSummary,
+            symbol_length,
+            symbol,
+            close_tp,
+            results,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let symbol_len = self.symbol_length as usize;
+        let mut total_size = 4 + 4 + symbol_len + 8 + 4;
+        for entry in &self.results {
+            total_size += 1 + 1 + 4 + entry.detail_len();
+        }
+
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_i64_le(self.close_tp);
+        buf.put_u32_le(self.results.len() as u32);
+
+        for entry in &self.results {
+            buf.put_u8(entry.request_type as u8);
+            buf.put_u8(entry.success as u8);
+            let detail_bytes = entry.detail.as_bytes();
+            buf.put_u32_le(detail_bytes.len() as u32);
+            buf.put(detail_bytes);
+        }
+
+        buf.freeze()
+    }
 }
 
 pub struct SignalMsg {
@@ -620,8 +711,7 @@ impl TopLongShortRatioMsg {
 
     pub fn to_bytes(&self) -> Bytes {
         // msg_type(4) + symbol_length(4) + symbol + base timestamp(8) + 12*f64 + 4*i64
-        let total_size =
-            4 + 4 + self.symbol_length as usize + 8 + 12 * 8 + 4 * 8;
+        let total_size = 4 + 4 + self.symbol_length as usize + 8 + 12 * 8 + 4 * 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u32_le(self.msg_type as u32);
