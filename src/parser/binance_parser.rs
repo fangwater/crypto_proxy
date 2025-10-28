@@ -15,6 +15,76 @@ const ONE_MINUTE_MILLIS: i64 = 60_000;
 const FIVE_MINUTE_MILLIS: i64 = 5 * ONE_MINUTE_MILLIS;
 const PREMIUM_INDEX_DELAY_SECS: u64 = 10;
 
+#[derive(Clone)]
+struct RestResult {
+    request_name: &'static str,
+    status: &'static str,
+    detail: String,
+}
+
+impl RestResult {
+    fn success(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            request_name: name,
+            status: "成功",
+            detail: detail.into(),
+        }
+    }
+
+    fn failure(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            request_name: name,
+            status: "失败",
+            detail: detail.into(),
+        }
+    }
+}
+
+fn log_rest_summary(symbol: &str, close_time: i64, results: &[RestResult]) {
+    if results.is_empty() {
+        return;
+    }
+
+    let mut table = String::new();
+    table.push_str("\n+----------------------+----------+----------------------+");
+    table.push_str("\n| Request              | Status   | Detail               |");
+    table.push_str("\n+----------------------+----------+----------------------+");
+    for result in results {
+        table.push_str(&format!(
+            "\n| {:<20} | {:<8} | {:<20} |",
+            result.request_name, result.status, result.detail
+        ));
+    }
+    table.push_str("\n+----------------------+----------+----------------------+");
+
+    info!(
+        "[Binance REST Summary] symbol={} close_time={}{}",
+        symbol, close_time, table
+    );
+}
+
+enum FetchError {
+    Request(String),
+    Http(StatusCode),
+    Json(String),
+    EmptyResponse,
+    MatchFailure,
+    MissingField(&'static str),
+}
+
+impl FetchError {
+    fn detail(&self) -> String {
+        match self {
+            FetchError::Request(err) => format!("请求错误: {}", err),
+            FetchError::Http(code) => format!("HTTP {}", code),
+            FetchError::Json(err) => format!("JSON错误: {}", err),
+            FetchError::EmptyResponse => "空响应".to_string(),
+            FetchError::MatchFailure => "匹配失败".to_string(),
+            FetchError::MissingField(field) => format!("缺少字段 {}", field),
+        }
+    }
+}
+
 pub struct BinanceSignalParser {
     source: SignalSource,
 }
@@ -243,13 +313,14 @@ impl Parser for BinanceKlineParser {
                                         let symbol_owned = symbol.to_string();
                                         let client_clone = client.clone();
                                         let kline_open_tp = timestamp;
-                                        let kline_close_tp = close_time;
+                                        let mut kline_close_tp = close_time;
 
                                         tokio::spawn(async move {
                                             if PREMIUM_INDEX_DELAY_SECS > 0 {
                                                 sleep(Duration::from_secs(PREMIUM_INDEX_DELAY_SECS))
                                                     .await;
                                             }
+                                            let mut rest_results: Vec<RestResult> = Vec::new();
                                             let premium_resp = client_clone
                                                 .get(premium_index_url.as_str())
                                                 .query(&[
@@ -267,6 +338,15 @@ impl Parser for BinanceKlineParser {
                                                     error!(
                                                         "Premium Index request error for {}: {}",
                                                         symbol_owned, err
+                                                    );
+                                                    rest_results.push(RestResult::failure(
+                                                        "premium-index",
+                                                        format!("请求错误: {}", err),
+                                                    ));
+                                                    log_rest_summary(
+                                                        symbol_owned.as_str(),
+                                                        kline_close_tp,
+                                                        &rest_results,
                                                     );
                                                     return;
                                                 }
@@ -287,6 +367,15 @@ impl Parser for BinanceKlineParser {
                                                         status, symbol_owned, body
                                                     );
                                                 }
+                                                rest_results.push(RestResult::failure(
+                                                    "premium-index",
+                                                    format!("HTTP {}", status),
+                                                ));
+                                                log_rest_summary(
+                                                    symbol_owned.as_str(),
+                                                    kline_close_tp,
+                                                    &rest_results,
+                                                );
                                                 return;
                                             }
 
@@ -298,6 +387,15 @@ impl Parser for BinanceKlineParser {
                                                             "Premium Index JSON parse error for {}: {}",
                                                             symbol_owned, err
                                                         );
+                                                        rest_results.push(RestResult::failure(
+                                                            "premium-index",
+                                                            format!("JSON错误: {}", err),
+                                                        ));
+                                                        log_rest_summary(
+                                                            symbol_owned.as_str(),
+                                                            kline_close_tp,
+                                                            &rest_results,
+                                                        );
                                                         return;
                                                     }
                                                 };
@@ -306,6 +404,15 @@ impl Parser for BinanceKlineParser {
                                                 error!(
                                                     "Premium Index response empty for {}",
                                                     symbol_owned
+                                                );
+                                                rest_results.push(RestResult::failure(
+                                                    "premium-index",
+                                                    "空响应",
+                                                ));
+                                                log_rest_summary(
+                                                    symbol_owned.as_str(),
+                                                    kline_close_tp,
+                                                    &rest_results,
                                                 );
                                                 return;
                                             }
@@ -356,10 +463,38 @@ impl Parser for BinanceKlineParser {
 
                                             let primary = match parse_record(&records[0]) {
                                                 Some(values) => values,
-                                                None => return,
+                                                None => {
+                                                    rest_results.push(RestResult::failure(
+                                                        "premium-index",
+                                                        "记录解析失败",
+                                                    ));
+                                                    log_rest_summary(
+                                                        symbol_owned.as_str(),
+                                                        kline_close_tp,
+                                                        &rest_results,
+                                                    );
+                                                    return;
+                                                }
                                             };
 
                                             let secondary = records.get(1).and_then(parse_record);
+
+                                            let primary_open_time = primary.0;
+                                            let selected_record = if let Some(secondary_record) =
+                                                secondary
+                                            {
+                                                if secondary_record.0 == kline_open_tp {
+                                                    Some(secondary_record)
+                                                } else if primary_open_time == kline_open_tp {
+                                                    Some(primary)
+                                                } else {
+                                                    None
+                                                }
+                                            } else if primary_open_time == kline_open_tp {
+                                                Some(primary)
+                                            } else {
+                                                None
+                                            };
 
                                             let (
                                                 open_time,
@@ -367,20 +502,37 @@ impl Parser for BinanceKlineParser {
                                                 high_price,
                                                 low_price,
                                                 close_price,
-                                            ) = match secondary {
-                                                Some((second_time, o, h, l, c))
-                                                    if second_time == timestamp =>
-                                                {
-                                                    (second_time, o, h, l, c)
+                                            ) = match selected_record {
+                                                Some(record) => {
+                                                    rest_results.push(RestResult::success(
+                                                        "premium-index",
+                                                        format!("ts={}", record.0),
+                                                    ));
+                                                    record
                                                 }
-                                                Some((second_time, _, _, _, _)) => {
-                                                    warn!(
-                                                            "[Premium Index Kline] Timestamp mismatch for {}: kline_ts={}, premium_index_ts={}, using latest record",
-                                                            symbol_owned, timestamp, second_time
+                                                None => {
+                                                    rest_results.push(RestResult::failure(
+                                                        "premium-index",
+                                                        "匹配失败",
+                                                    ));
+                                                    if let Some((second_time, _, _, _, _)) =
+                                                        secondary
+                                                    {
+                                                        warn!(
+                                                            "[Premium Index Kline] Timestamp mismatch for {}: kline_ts={}, premium_index_ts0={}, premium_index_ts1={}, using latest record",
+                                                            symbol_owned,
+                                                            kline_open_tp,
+                                                            primary_open_time,
+                                                            second_time
                                                         );
+                                                    } else {
+                                                        warn!(
+                                                            "[Premium Index Kline] Timestamp mismatch for {}: kline_ts={}, premium_index_ts0={}, using latest record",
+                                                            symbol_owned, kline_open_tp, primary_open_time
+                                                        );
+                                                    }
                                                     primary
                                                 }
-                                                None => primary,
                                             };
                                             let pkline_matches_kline =
                                                 open_time == kline_open_tp;
@@ -408,6 +560,15 @@ impl Parser for BinanceKlineParser {
                                                         "Open Interest request error for {}: {}",
                                                         symbol_owned, err
                                                     );
+                                                    rest_results.push(RestResult::failure(
+                                                        "open-interest",
+                                                        format!("请求错误: {}", err),
+                                                    ));
+                                                    log_rest_summary(
+                                                        symbol_owned.as_str(),
+                                                        kline_close_tp,
+                                                        &rest_results,
+                                                    );
                                                     return;
                                                 }
                                             };
@@ -427,6 +588,15 @@ impl Parser for BinanceKlineParser {
                                                         oi_status, symbol_owned, oi_body
                                                     );
                                                 }
+                                                rest_results.push(RestResult::failure(
+                                                    "open-interest",
+                                                    format!("HTTP {}", oi_status),
+                                                ));
+                                                log_rest_summary(
+                                                    symbol_owned.as_str(),
+                                                    kline_close_tp,
+                                                    &rest_results,
+                                                );
                                                 return;
                                             }
 
@@ -438,6 +608,15 @@ impl Parser for BinanceKlineParser {
                                                         "Open Interest JSON parse error for {}: {}",
                                                         symbol_owned, err
                                                     );
+                                                        rest_results.push(RestResult::failure(
+                                                            "open-interest",
+                                                            format!("JSON错误: {}", err),
+                                                        ));
+                                                        log_rest_summary(
+                                                            symbol_owned.as_str(),
+                                                            kline_close_tp,
+                                                            &rest_results,
+                                                        );
                                                         return;
                                                     }
                                                 };
@@ -449,6 +628,10 @@ impl Parser for BinanceKlineParser {
                                                 match oi_str.parse::<f64>() {
                                                     Ok(oi) => {
                                                         msg.set_open_interest(oi, time);
+                                                        rest_results.push(RestResult::success(
+                                                            "open-interest",
+                                                            format!("ts={}", time),
+                                                        ));
                                                         if !pkline_matches_kline {
                                                             let border = "+----------------------+------------------------------------------------------------+";
                                                             let symbol_row = format!(
@@ -492,6 +675,10 @@ impl Parser for BinanceKlineParser {
                                                         }
                                                     }
                                                     Err(err) => {
+                                                        rest_results.push(RestResult::failure(
+                                                            "open-interest",
+                                                            format!("解析失败: {}", err),
+                                                        ));
                                                         error!(
                                                             "Open Interest parse error for {}: {} ({})",
                                                             symbol_owned, oi_str, err
@@ -499,6 +686,10 @@ impl Parser for BinanceKlineParser {
                                                     }
                                                 }
                                             } else {
+                                                rest_results.push(RestResult::failure(
+                                                    "open-interest",
+                                                    "缺少字段 openInterest/time",
+                                                ));
                                                 error!(
                                                     "Open Interest missing fields for {}",
                                                     symbol_owned
@@ -511,76 +702,132 @@ impl Parser for BinanceKlineParser {
                                                     symbol_owned, err
                                                 );
                                             }
-                                        });
-
-                                        if is_five_minute_boundary(close_time) {
-                                            let ratio_symbol = symbol.to_string();
-                                            info!(
-                                                "[Binance Ratio Trigger] symbol={} close_time={} remainder={}",
-                                                ratio_symbol,
-                                                close_time,
-                                                close_time % FIVE_MINUTE_MILLIS
-                                            );
-                                            let ratio_sender = sender.clone();
-                                            let ratio_client = client.clone();
-                                            let account_url = top_account_ratio_url.clone();
-                                            let position_url = top_position_ratio_url.clone();
-                                            let global_url = global_account_ratio_url.clone();
-                                            let oi_hist_url = open_interest_hist_url.clone();
-                                            tokio::spawn(async move {
+                                            //修正
+                                            kline_close_tp += 1;
+                                            if is_five_minute_boundary(kline_close_tp) {
                                                 info!(
-                                                    "[Binance Ratio Fetch] start symbol={} close_time={}",
-                                                    ratio_symbol,
-                                                    close_time
+                                                    "[Binance Ratio Trigger] symbol={} close_time={}",
+                                                    symbol_owned,
+                                                    kline_close_tp
                                                 );
+                                                let ratio_symbol = symbol_owned.clone();
+                                                let ratio_client = client_clone.clone();
+                                                let ratio_sender = sender_clone.clone();
                                                 let (account_res, position_res, global_res, oi_hist_res) =
                                                     tokio::join!(
-                                                    fetch_ratio_metrics(
-                                                        ratio_client.clone(),
-                                                        account_url,
-                                                        ratio_symbol.clone(),
-                                                        "top-account",
-                                                        "longAccount",
-                                                        "shortAccount",
-                                                        close_time
-                                                    ),
-                                                    fetch_ratio_metrics(
-                                                        ratio_client.clone(),
-                                                        position_url,
-                                                        ratio_symbol.clone(),
-                                                        "top-position",
-                                                        "longPosition",
-                                                        "shortPosition",
-                                                        close_time
-                                                    ),
-                                                    fetch_ratio_metrics(
-                                                        ratio_client.clone(),
-                                                        global_url,
-                                                        ratio_symbol.clone(),
-                                                        "global-account",
-                                                        "longAccount",
-                                                        "shortAccount",
-                                                        close_time
-                                                    ),
-                                                    fetch_open_interest_hist(
-                                                        ratio_client,
-                                                        oi_hist_url,
-                                                        ratio_symbol.clone(),
-                                                        close_time
-                                                    )
-                                                );
-
-                                                if let (Ok(account), Ok(position), Ok(global)) =
-                                                    (account_res, position_res, global_res)
-                                                {
-                                                    info!(
-                                                        "[Binance Ratio Fetch] success symbol={} close_time={}",
-                                                        ratio_symbol,
-                                                        close_time
+                                                        fetch_ratio_metrics(
+                                                            ratio_client.clone(),
+                                                            top_account_ratio_url.clone(),
+                                                            ratio_symbol.clone(),
+                                                            "top-account",
+                                                            "longAccount",
+                                                            "shortAccount",
+                                                            kline_close_tp
+                                                        ),
+                                                        fetch_ratio_metrics(
+                                                            ratio_client.clone(),
+                                                            top_position_ratio_url.clone(),
+                                                            ratio_symbol.clone(),
+                                                            "top-position",
+                                                            "longAccount",
+                                                            "shortAccount",
+                                                            kline_close_tp
+                                                        ),
+                                                        fetch_ratio_metrics(
+                                                            ratio_client.clone(),
+                                                            global_account_ratio_url.clone(),
+                                                            ratio_symbol.clone(),
+                                                            "global-account",
+                                                            "longAccount",
+                                                            "shortAccount",
+                                                            kline_close_tp
+                                                        ),
+                                                        fetch_open_interest_hist(
+                                                            ratio_client,
+                                                            open_interest_hist_url.clone(),
+                                                            ratio_symbol.clone(),
+                                                            kline_close_tp
+                                                        )
                                                     );
+
+                                                let mut account_data: Option<RatioMetrics> = None;
+                                                match account_res {
+                                                    Ok(data) => {
+                                                        rest_results.push(RestResult::success(
+                                                            "top-account",
+                                                            format!("ts={}", data.timestamp),
+                                                        ));
+                                                        account_data = Some(data);
+                                                    }
+                                                    Err(err) => {
+                                                        rest_results.push(RestResult::failure(
+                                                            "top-account",
+                                                            err.detail(),
+                                                        ));
+                                                    }
+                                                }
+
+                                                let mut position_data: Option<RatioMetrics> = None;
+                                                match position_res {
+                                                    Ok(data) => {
+                                                        rest_results.push(RestResult::success(
+                                                            "top-position",
+                                                            format!("ts={}", data.timestamp),
+                                                        ));
+                                                        position_data = Some(data);
+                                                    }
+                                                    Err(err) => {
+                                                        rest_results.push(RestResult::failure(
+                                                            "top-position",
+                                                            err.detail(),
+                                                        ));
+                                                    }
+                                                }
+
+                                                let mut global_data: Option<RatioMetrics> = None;
+                                                match global_res {
+                                                    Ok(data) => {
+                                                        rest_results.push(RestResult::success(
+                                                            "global-account",
+                                                            format!("ts={}", data.timestamp),
+                                                        ));
+                                                        global_data = Some(data);
+                                                    }
+                                                    Err(err) => {
+                                                        rest_results.push(RestResult::failure(
+                                                            "global-account",
+                                                            err.detail(),
+                                                        ));
+                                                    }
+                                                }
+
+                                                let mut oi_hist_data: Option<OpenInterestHist> = None;
+                                                match oi_hist_res {
+                                                    Ok(data) => {
+                                                        rest_results.push(RestResult::success(
+                                                            "open-interest-hist",
+                                                            format!("ts={}", data.timestamp),
+                                                        ));
+                                                        oi_hist_data = Some(data);
+                                                    }
+                                                    Err(err) => {
+                                                        rest_results.push(RestResult::failure(
+                                                            "open-interest-hist",
+                                                            err.detail(),
+                                                        ));
+                                                    }
+                                                }
+
+                                                if let (Some(account), Some(position), Some(global)) =
+                                                    (
+                                                        account_data.as_ref(),
+                                                        position_data.as_ref(),
+                                                        global_data.as_ref(),
+                                                    )
+                                                {
                                                     let mut ratio_msg = TopLongShortRatioMsg::create(
                                                         ratio_symbol.clone(),
-                                                        close_time,
+                                                        kline_close_tp,
                                                         account.long_value,
                                                         account.short_value,
                                                         account.ratio_value,
@@ -595,7 +842,7 @@ impl Parser for BinanceKlineParser {
                                                         global.timestamp,
                                                     );
 
-                                                    if let Ok(oi_hist) = oi_hist_res {
+                                                    if let Some(oi_hist) = oi_hist_data.as_ref() {
                                                         ratio_msg.set_open_interest_hist(
                                                             oi_hist.sum_open_interest,
                                                             oi_hist.sum_open_interest_value,
@@ -603,11 +850,6 @@ impl Parser for BinanceKlineParser {
                                                             oi_hist.timestamp,
                                                         );
                                                     }
-                                                    info!(
-                                                        "[Binance Ratio Broadcast] symbol={} close_time={}",
-                                                        ratio_symbol,
-                                                        close_time
-                                                    );
 
                                                     if let Err(err) = ratio_sender.send(ratio_msg.to_bytes()) {
                                                         error!(
@@ -615,6 +857,11 @@ impl Parser for BinanceKlineParser {
                                                             ratio_symbol, err
                                                         );
                                                     }
+                                                    info!(
+                                                        "[Binance Ratio Broadcast] symbol={} close_time={}",
+                                                        ratio_symbol,
+                                                        kline_close_tp
+                                                    );
                                                     if ratio_symbol.to_lowercase() == "btcusdt" {
                                                         info!(
                                                             "[Binance Top LongShort] {}: account(long={}, short={}, ratio={}, ts={}), position(long={}, short={}, ratio={}, ts={}), global(long={}, short={}, ratio={}, ts={})",
@@ -634,8 +881,15 @@ impl Parser for BinanceKlineParser {
                                                         );
                                                     }
                                                 }
-                                            });
-                                        }
+                                            }
+
+                                            log_rest_summary(
+                                                symbol_owned.as_str(),
+                                                kline_close_tp,
+                                                &rest_results,
+                                            );
+                                        });
+
                                     }
                                 }
                                 // 发送K线消息
@@ -659,8 +913,8 @@ struct RatioMetrics {
     timestamp: i64,
 }
 
-fn is_five_minute_boundary(timestamp: i64) -> bool {
-    timestamp % FIVE_MINUTE_MILLIS == 0
+fn is_five_minute_boundary(close_time: i64) -> bool {
+    close_time % FIVE_MINUTE_MILLIS == 0
 }
 
 async fn fetch_ratio_metrics(
@@ -671,7 +925,7 @@ async fn fetch_ratio_metrics(
     long_key: &'static str,
     short_key: &'static str,
     close_time: i64,
-) -> Result<RatioMetrics, ()> {
+) -> Result<RatioMetrics, FetchError> {
     let response = client
         .get(url.as_str())
         .query(&[
@@ -690,7 +944,7 @@ async fn fetch_ratio_metrics(
                 "{} request error for {}: {}",
                 label, symbol, err
             );
-            return Err(());
+            return Err(FetchError::Request(err.to_string()));
         }
     };
 
@@ -712,7 +966,7 @@ async fn fetch_ratio_metrics(
                 label, status, symbol
             );
         }
-        return Err(());
+        return Err(FetchError::Http(status));
     }
 
     let entries: Vec<serde_json::Value> = match serde_json::from_str(&body) {
@@ -722,13 +976,13 @@ async fn fetch_ratio_metrics(
                 "{} JSON parse error for {}: {}",
                 label, symbol, err
             );
-            return Err(());
+            return Err(FetchError::Json(err.to_string()));
         }
     };
 
     if entries.is_empty() {
         info!("{} response empty for {}", label, symbol);
-        return Err(());
+        return Err(FetchError::EmptyResponse);
     }
 
     let to_i64 = |value: &serde_json::Value| -> Option<i64> {
@@ -737,17 +991,17 @@ async fn fetch_ratio_metrics(
             .or_else(|| value.as_str()?.parse::<i64>().ok())
     };
 
-    let entry = match entries
-        .iter()
-        .find(|entry| entry.get("timestamp").and_then(|v| to_i64(v)) == Some(close_time))
-    {
+    let entry = match entries.iter().find(|entry| {
+        let ts = entry.get("timestamp").and_then(|v| to_i64(v));
+        ts == Some(close_time) || ts == Some(close_time + 1)
+    }) {
         Some(entry) => entry,
         None => {
             info!(
                 "{} missing record for {} at close_time {}",
                 label, symbol, close_time
             );
-            return Err(());
+            return Err(FetchError::MatchFailure);
         }
     };
 
@@ -765,7 +1019,7 @@ async fn fetch_ratio_metrics(
                 "{} missing {} for {}",
                 label, long_key, symbol
             );
-            return Err(());
+            return Err(FetchError::MissingField(long_key));
         }
     };
 
@@ -776,7 +1030,7 @@ async fn fetch_ratio_metrics(
                 "{} missing {} for {}",
                 label, short_key, symbol
             );
-            return Err(());
+            return Err(FetchError::MissingField(short_key));
         }
     };
 
@@ -787,7 +1041,7 @@ async fn fetch_ratio_metrics(
                 "{} missing longShortRatio for {}",
                 label, symbol
             );
-            return Err(());
+            return Err(FetchError::MissingField("longShortRatio"));
         }
     };
 
@@ -816,7 +1070,7 @@ async fn fetch_open_interest_hist(
     url: String,
     symbol: String,
     close_time: i64,
-) -> Result<OpenInterestHist, ()> {
+) -> Result<OpenInterestHist, FetchError> {
     let response = client
         .get(url.as_str())
         .query(&[
@@ -835,7 +1089,7 @@ async fn fetch_open_interest_hist(
                 "open-interest-hist request error for {}: {}",
                 symbol, err
             );
-            return Err(());
+            return Err(FetchError::Request(err.to_string()));
         }
     };
 
@@ -857,7 +1111,7 @@ async fn fetch_open_interest_hist(
                 status, symbol
             );
         }
-        return Err(());
+        return Err(FetchError::Http(status));
     }
 
     let entries: Vec<serde_json::Value> = match serde_json::from_str(&body) {
@@ -867,13 +1121,13 @@ async fn fetch_open_interest_hist(
                 "open-interest-hist JSON parse error for {}: {}",
                 symbol, err
             );
-            return Err(());
+            return Err(FetchError::Json(err.to_string()));
         }
     };
 
     if entries.is_empty() {
         info!("open-interest-hist response empty for {}", symbol);
-        return Err(());
+        return Err(FetchError::EmptyResponse);
     }
 
     let to_i64 = |value: &serde_json::Value| -> Option<i64> {
@@ -883,10 +1137,8 @@ async fn fetch_open_interest_hist(
     };
 
     let entry = match entries.iter().find(|entry| {
-        entry
-            .get("timestamp")
-            .and_then(|v| to_i64(v))
-            == Some(close_time)
+        let ts = entry.get("timestamp").and_then(|v| to_i64(v));
+        ts == Some(close_time) || ts == Some(close_time + 1)
     }) {
         Some(entry) => entry,
         None => {
@@ -894,7 +1146,7 @@ async fn fetch_open_interest_hist(
                 "open-interest-hist missing record for {} at close_time {}",
                 symbol, close_time
             );
-            return Err(());
+            return Err(FetchError::MatchFailure);
         }
     };
 
@@ -911,7 +1163,7 @@ async fn fetch_open_interest_hist(
                 "open-interest-hist missing sumOpenInterest for {}",
                 symbol
             );
-            return Err(());
+            return Err(FetchError::MissingField("sumOpenInterest"));
         }
     };
 
@@ -922,7 +1174,7 @@ async fn fetch_open_interest_hist(
                 "open-interest-hist missing sumOpenInterestValue for {}",
                 symbol
             );
-            return Err(());
+            return Err(FetchError::MissingField("sumOpenInterestValue"));
         }
     };
 
