@@ -9,10 +9,11 @@ use log::{error, info, warn};
 use reqwest::{self, StatusCode};
 use std::collections::HashSet;
 use tokio::sync::broadcast;
-use tokio::time::Duration;
+use tokio::time::{sleep, Duration};
 
 const ONE_MINUTE_MILLIS: i64 = 60_000;
 const FIVE_MINUTE_MILLIS: i64 = 5 * ONE_MINUTE_MILLIS;
+const PREMIUM_INDEX_DELAY_SECS: u64 = 10;
 
 pub struct BinanceSignalParser {
     source: SignalSource,
@@ -137,27 +138,15 @@ impl Parser for BinanceKlineParser {
                             kline_obj.get("V").and_then(|v| v.as_str()), //主动买入成交量
                             kline_obj.get("Q").and_then(|v| v.as_str()), //主动买入成交额
                         ) {
-                            let raw_close_time = kline_obj
+                            let close_time = kline_obj
                                 .get("T")
                                 .and_then(|v| v.as_i64())
-                                .unwrap_or(timestamp + ONE_MINUTE_MILLIS - 1);
-                            let close_time = align_to_minute(raw_close_time);
-                            if symbol.to_lowercase() == "btcusdt" {
-                                let remainder = close_time % FIVE_MINUTE_MILLIS;
-                                info!(
-                                    "[Binance Kline Debug] symbol={}, raw_close_time={}, aligned_close={}, remainder={}",
-                                    symbol,
-                                    raw_close_time,
-                                    close_time,
-                                    remainder
-                                );
-                            }
+                                .unwrap_or(timestamp + 1);
                             // 只为BTCUSDT打印OHLCV数据
                             if symbol.to_lowercase() == "btcusdt" {
                                 info!("[Binance Kline] BTCUSDT OHLCV: o={}, h={}, l={}, c={}, v={}, q={}, t={}, n={}, V={}, Q={}", 
                                       open_str, high_str, low_str, close_str, volume_str, turnover_str, timestamp, trade_num, taker_buy_vol_str, taker_buy_quote_vol_str);
                             }
-
                             // 解析价格和成交量数据
                             if let (
                                 Ok(open),
@@ -249,12 +238,18 @@ impl Parser for BinanceKlineParser {
                                                     );
                                                     return 0;
                                                 }
-                                            };
+                                        };
                                         let sender_clone = sender.clone();
                                         let symbol_owned = symbol.to_string();
                                         let client_clone = client.clone();
+                                        let kline_open_tp = timestamp;
+                                        let kline_close_tp = close_time;
 
                                         tokio::spawn(async move {
+                                            if PREMIUM_INDEX_DELAY_SECS > 0 {
+                                                sleep(Duration::from_secs(PREMIUM_INDEX_DELAY_SECS))
+                                                    .await;
+                                            }
                                             let premium_resp = client_clone
                                                 .get(premium_index_url.as_str())
                                                 .query(&[
@@ -387,6 +382,8 @@ impl Parser for BinanceKlineParser {
                                                 }
                                                 None => primary,
                                             };
+                                            let pkline_matches_kline =
+                                                open_time == kline_open_tp;
 
                                             let mut msg = PremiumIndexKlineMsg::create(
                                                 symbol_owned.clone(),
@@ -452,19 +449,46 @@ impl Parser for BinanceKlineParser {
                                                 match oi_str.parse::<f64>() {
                                                     Ok(oi) => {
                                                         msg.set_open_interest(oi, time);
-                                                        if symbol_owned.to_lowercase() == "btcusdt"
-                                                        {
-                                                            info!(
-                                                                "[Binance Premium Index Kline] {}: o={}, h={}, l={}, c={}, t={}, open_interest={},tran={}",
-                                                                symbol_owned.to_lowercase(),
-                                                                open_price,
-                                                                high_price,
-                                                                low_price,
-                                                                close_price,
-                                                                open_time,
-                                                                oi,
-                                                                time
+                                                        if !pkline_matches_kline {
+                                                            let border = "+----------------------+------------------------------------------------------------+";
+                                                            let symbol_row = format!(
+                                                                "| {:<20} | {:<60} |",
+                                                                "symbol",
+                                                                symbol_owned.as_str()
                                                             );
+                                                            let header_row = format!(
+                                                                "| {:<20} | {:<60} |",
+                                                                "请求", "时间tp(ms)"
+                                                            );
+                                                            let kline_row = format!(
+                                                                "| {:<20} | {:<60} |",
+                                                                "kline",
+                                                                format!(
+                                                                    "open={}, close={}",
+                                                                    kline_open_tp, kline_close_tp
+                                                                )
+                                                            );
+                                                            let pkline_row = format!(
+                                                                "| {:<20} | {:<60} |",
+                                                                "pkline",
+                                                                open_time.to_string()
+                                                            );
+                                                            let open_interest_row = format!(
+                                                                "| {:<20} | {:<60} |",
+                                                                "openinterst",
+                                                                time.to_string()
+                                                            );
+                                                            let table = format!(
+                                                                "\n{border}\n{symbol_row}\n{border}\n{header_row}\n{kline_row}\n{pkline_row}\n{open_interest_row}\n{border}",
+                                                                border = border,
+                                                                symbol_row = symbol_row,
+                                                                header_row = header_row,
+                                                                kline_row = kline_row,
+                                                                pkline_row = pkline_row,
+                                                                open_interest_row =
+                                                                    open_interest_row,
+                                                            );
+                                                            info!("{}", table);
                                                         }
                                                     }
                                                     Err(err) => {
@@ -633,10 +657,6 @@ struct RatioMetrics {
     short_value: f64,
     ratio_value: f64,
     timestamp: i64,
-}
-
-fn align_to_minute(timestamp: i64) -> i64 {
-    timestamp - (timestamp % ONE_MINUTE_MILLIS)
 }
 
 fn is_five_minute_boundary(timestamp: i64) -> bool {
