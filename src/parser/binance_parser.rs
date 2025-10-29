@@ -1,8 +1,8 @@
 use crate::cfg::BinanceRestCfg;
 use crate::mkt_msg::{
     BinanceIncSeqNoMsg, FundingRateMsg, IncMsg, IndexPriceMsg, KlineMsg, Level, LiquidationMsg,
-    MarkPriceMsg, PremiumIndexKlineMsg, RestRequestType, RestSummaryEntry, RestSummaryMsg,
-    SignalMsg, SignalSource, TopLongShortRatioMsg, TradeMsg,
+    MarkPriceMsg, PremiumIndexKlineMsg, RestRequestType, RestSummary1mMsg, RestSummary5mMsg,
+    RestSummaryEntry, SignalMsg, SignalSource, TopLongShortRatioMsg, TradeMsg,
 };
 use crate::parser::default_parser::Parser;
 use bytes::Bytes;
@@ -41,23 +41,118 @@ impl RestResult {
     }
 }
 
+enum RestSummaryStage {
+    OneMinute,
+    FiveMinute,
+}
+
+impl RestSummaryStage {
+    fn requests(&self) -> &'static [RestRequestType] {
+        match self {
+            RestSummaryStage::OneMinute => {
+                &[RestRequestType::PremiumIndex, RestRequestType::OpenInterest]
+            }
+            RestSummaryStage::FiveMinute => &[
+                RestRequestType::TopAccount,
+                RestRequestType::TopPosition,
+                RestRequestType::GlobalAccount,
+                RestRequestType::OpenInterestHist,
+            ],
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            RestSummaryStage::OneMinute => "1m",
+            RestSummaryStage::FiveMinute => "5m",
+        }
+    }
+}
+
+#[derive(Default)]
+struct RestSummaryCollector {
+    premium_index: Option<RestResult>,
+    open_interest: Option<RestResult>,
+    top_account: Option<RestResult>,
+    top_position: Option<RestResult>,
+    global_account: Option<RestResult>,
+    open_interest_hist: Option<RestResult>,
+}
+
+impl RestSummaryCollector {
+    fn update(&mut self, result: RestResult) {
+        match result.request {
+            RestRequestType::PremiumIndex => self.premium_index = Some(result),
+            RestRequestType::OpenInterest => self.open_interest = Some(result),
+            RestRequestType::TopAccount => self.top_account = Some(result),
+            RestRequestType::TopPosition => self.top_position = Some(result),
+            RestRequestType::GlobalAccount => self.global_account = Some(result),
+            RestRequestType::OpenInterestHist => self.open_interest_hist = Some(result),
+        }
+    }
+
+    fn get(&self, request: RestRequestType) -> Option<&RestResult> {
+        match request {
+            RestRequestType::PremiumIndex => self.premium_index.as_ref(),
+            RestRequestType::OpenInterest => self.open_interest.as_ref(),
+            RestRequestType::TopAccount => self.top_account.as_ref(),
+            RestRequestType::TopPosition => self.top_position.as_ref(),
+            RestRequestType::GlobalAccount => self.global_account.as_ref(),
+            RestRequestType::OpenInterestHist => self.open_interest_hist.as_ref(),
+        }
+    }
+}
+
 fn report_rest_summary(
     sender: &broadcast::Sender<Bytes>,
     symbol: &str,
     close_time: i64,
-    results: &[RestResult],
+    collector: &RestSummaryCollector,
+    stage: RestSummaryStage,
 ) {
-    let summary_entries: Vec<RestSummaryEntry> = results
-        .iter()
-        .map(|result| RestSummaryEntry::new(result.request, result.success, result.detail.clone()))
-        .collect();
+    let requests = stage.requests();
+    let mut summary_entries: Vec<RestSummaryEntry> = Vec::with_capacity(requests.len());
 
-    let summary_msg = RestSummaryMsg::create(symbol.to_string(), close_time, summary_entries);
-    if let Err(err) = sender.send(summary_msg.to_bytes()) {
+    for request in requests.iter() {
+        if let Some(result) = collector.get(*request) {
+            summary_entries.push(RestSummaryEntry::new(
+                result.request,
+                result.success,
+                result.detail.clone(),
+            ));
+        } else {
+            summary_entries.push(RestSummaryEntry::new(*request, false, "未执行"));
+        }
+    }
+
+    let send_result = match stage {
+        RestSummaryStage::OneMinute => {
+            let summary_msg = RestSummary1mMsg::create(
+                symbol.to_string(),
+                close_time,
+                summary_entries[0].clone(),
+                summary_entries[1].clone(),
+            );
+            sender.send(summary_msg.to_bytes())
+        }
+        RestSummaryStage::FiveMinute => {
+            let summary_msg = RestSummary5mMsg::create(
+                symbol.to_string(),
+                close_time,
+                summary_entries[0].clone(),
+                summary_entries[1].clone(),
+                summary_entries[2].clone(),
+                summary_entries[3].clone(),
+            );
+            sender.send(summary_msg.to_bytes())
+        }
+    };
+
+    if let Err(err) = send_result {
         error!("Failed to broadcast REST summary for {}: {}", symbol, err);
     }
 
-    if results.iter().all(|r| r.success) {
+    if summary_entries.iter().all(|entry| entry.success) {
         return;
     }
 
@@ -65,20 +160,23 @@ fn report_rest_summary(
     table.push_str("\n+----------------------+----------+----------------------+");
     table.push_str("\n| Request              | Status   | Detail               |");
     table.push_str("\n+----------------------+----------+----------------------+");
-    for result in results {
-        let status = if result.success { "成功" } else { "失败" };
+    for entry in &summary_entries {
+        let status = if entry.success { "成功" } else { "失败" };
         table.push_str(&format!(
             "\n| {:<20} | {:<8} | {:<20} |",
-            result.request.as_str(),
+            entry.request_type.as_str(),
             status,
-            result.detail.as_str()
+            entry.detail.as_str()
         ));
     }
     table.push_str("\n+----------------------+----------+----------------------+");
 
     info!(
-        "[Binance REST Summary] symbol={} close_time={}{}",
-        symbol, close_time, table
+        "[Binance REST Summary {}] symbol={} close_time={}{}",
+        stage.label(),
+        symbol,
+        close_time,
+        table
     );
 }
 
@@ -347,7 +445,7 @@ impl Parser for BinanceKlineParser {
                                                 ))
                                                 .await;
                                             }
-                                            let mut rest_results: Vec<RestResult> = Vec::new();
+                                            let mut rest_summary = RestSummaryCollector::default();
                                             let premium_resp = client_clone
                                                 .get(premium_index_url.as_str())
                                                 .query(&[
@@ -366,7 +464,7 @@ impl Parser for BinanceKlineParser {
                                                         "Premium Index request error for {}: {}",
                                                         symbol_owned, err
                                                     );
-                                                    rest_results.push(RestResult::failure(
+                                                    rest_summary.update(RestResult::failure(
                                                         RestRequestType::PremiumIndex,
                                                         format!("请求错误: {}", err),
                                                     ));
@@ -374,7 +472,8 @@ impl Parser for BinanceKlineParser {
                                                         &sender_clone,
                                                         symbol_owned.as_str(),
                                                         kline_close_tp,
-                                                        &rest_results,
+                                                        &rest_summary,
+                                                        RestSummaryStage::OneMinute,
                                                     );
                                                     return;
                                                 }
@@ -395,7 +494,7 @@ impl Parser for BinanceKlineParser {
                                                         status, symbol_owned, body
                                                     );
                                                 }
-                                                rest_results.push(RestResult::failure(
+                                                rest_summary.update(RestResult::failure(
                                                     RestRequestType::PremiumIndex,
                                                     format!("HTTP {}", status),
                                                 ));
@@ -403,7 +502,8 @@ impl Parser for BinanceKlineParser {
                                                     &sender_clone,
                                                     symbol_owned.as_str(),
                                                     kline_close_tp,
-                                                    &rest_results,
+                                                    &rest_summary,
+                                                    RestSummaryStage::OneMinute,
                                                 );
                                                 return;
                                             }
@@ -416,7 +516,7 @@ impl Parser for BinanceKlineParser {
                                                             "Premium Index JSON parse error for {}: {}",
                                                             symbol_owned, err
                                                         );
-                                                        rest_results.push(RestResult::failure(
+                                                        rest_summary.update(RestResult::failure(
                                                             RestRequestType::PremiumIndex,
                                                             format!("JSON错误: {}", err),
                                                         ));
@@ -424,7 +524,8 @@ impl Parser for BinanceKlineParser {
                                                             &sender_clone,
                                                             symbol_owned.as_str(),
                                                             kline_close_tp,
-                                                            &rest_results,
+                                                            &rest_summary,
+                                                            RestSummaryStage::OneMinute,
                                                         );
                                                         return;
                                                     }
@@ -435,7 +536,7 @@ impl Parser for BinanceKlineParser {
                                                     "Premium Index response empty for {}",
                                                     symbol_owned
                                                 );
-                                                rest_results.push(RestResult::failure(
+                                                rest_summary.update(RestResult::failure(
                                                     RestRequestType::PremiumIndex,
                                                     "空响应",
                                                 ));
@@ -443,7 +544,8 @@ impl Parser for BinanceKlineParser {
                                                     &sender_clone,
                                                     symbol_owned.as_str(),
                                                     kline_close_tp,
-                                                    &rest_results,
+                                                    &rest_summary,
+                                                    RestSummaryStage::OneMinute,
                                                 );
                                                 return;
                                             }
@@ -495,7 +597,7 @@ impl Parser for BinanceKlineParser {
                                             let primary = match parse_record(&records[0]) {
                                                 Some(values) => values,
                                                 None => {
-                                                    rest_results.push(RestResult::failure(
+                                                    rest_summary.update(RestResult::failure(
                                                         RestRequestType::PremiumIndex,
                                                         "记录解析失败",
                                                     ));
@@ -503,7 +605,8 @@ impl Parser for BinanceKlineParser {
                                                         &sender_clone,
                                                         symbol_owned.as_str(),
                                                         kline_close_tp,
-                                                        &rest_results,
+                                                        &rest_summary,
+                                                        RestSummaryStage::OneMinute,
                                                     );
                                                     return;
                                                 }
@@ -535,14 +638,14 @@ impl Parser for BinanceKlineParser {
                                                 close_price,
                                             ) = match selected_record {
                                                 Some(record) => {
-                                                    rest_results.push(RestResult::success(
+                                                    rest_summary.update(RestResult::success(
                                                         RestRequestType::PremiumIndex,
                                                         format!("ts={}", record.0),
                                                     ));
                                                     record
                                                 }
                                                 None => {
-                                                    rest_results.push(RestResult::failure(
+                                                    rest_summary.update(RestResult::failure(
                                                         RestRequestType::PremiumIndex,
                                                         "匹配失败",
                                                     ));
@@ -590,7 +693,7 @@ impl Parser for BinanceKlineParser {
                                                         "Open Interest request error for {}: {}",
                                                         symbol_owned, err
                                                     );
-                                                    rest_results.push(RestResult::failure(
+                                                    rest_summary.update(RestResult::failure(
                                                         RestRequestType::OpenInterest,
                                                         format!("请求错误: {}", err),
                                                     ));
@@ -598,7 +701,8 @@ impl Parser for BinanceKlineParser {
                                                         &sender_clone,
                                                         symbol_owned.as_str(),
                                                         kline_close_tp,
-                                                        &rest_results,
+                                                        &rest_summary,
+                                                        RestSummaryStage::OneMinute,
                                                     );
                                                     return;
                                                 }
@@ -619,7 +723,7 @@ impl Parser for BinanceKlineParser {
                                                         oi_status, symbol_owned, oi_body
                                                     );
                                                 }
-                                                rest_results.push(RestResult::failure(
+                                                rest_summary.update(RestResult::failure(
                                                     RestRequestType::OpenInterest,
                                                     format!("HTTP {}", oi_status),
                                                 ));
@@ -627,7 +731,8 @@ impl Parser for BinanceKlineParser {
                                                     &sender_clone,
                                                     symbol_owned.as_str(),
                                                     kline_close_tp,
-                                                    &rest_results,
+                                                    &rest_summary,
+                                                    RestSummaryStage::OneMinute,
                                                 );
                                                 return;
                                             }
@@ -640,7 +745,7 @@ impl Parser for BinanceKlineParser {
                                                         "Open Interest JSON parse error for {}: {}",
                                                         symbol_owned, err
                                                     );
-                                                        rest_results.push(RestResult::failure(
+                                                        rest_summary.update(RestResult::failure(
                                                             RestRequestType::OpenInterest,
                                                             format!("JSON错误: {}", err),
                                                         ));
@@ -648,7 +753,8 @@ impl Parser for BinanceKlineParser {
                                                             &sender_clone,
                                                             symbol_owned.as_str(),
                                                             kline_close_tp,
-                                                            &rest_results,
+                                                            &rest_summary,
+                                                            RestSummaryStage::OneMinute,
                                                         );
                                                         return;
                                                     }
@@ -661,7 +767,7 @@ impl Parser for BinanceKlineParser {
                                                 match oi_str.parse::<f64>() {
                                                     Ok(oi) => {
                                                         msg.set_open_interest(oi, time);
-                                                        rest_results.push(RestResult::success(
+                                                        rest_summary.update(RestResult::success(
                                                             RestRequestType::OpenInterest,
                                                             format!("ts={}", time),
                                                         ));
@@ -708,7 +814,7 @@ impl Parser for BinanceKlineParser {
                                                         }
                                                     }
                                                     Err(err) => {
-                                                        rest_results.push(RestResult::failure(
+                                                        rest_summary.update(RestResult::failure(
                                                             RestRequestType::OpenInterest,
                                                             format!("解析失败: {}", err),
                                                         ));
@@ -719,7 +825,7 @@ impl Parser for BinanceKlineParser {
                                                     }
                                                 }
                                             } else {
-                                                rest_results.push(RestResult::failure(
+                                                rest_summary.update(RestResult::failure(
                                                     RestRequestType::OpenInterest,
                                                     "缺少字段 openInterest/time",
                                                 ));
@@ -737,6 +843,13 @@ impl Parser for BinanceKlineParser {
                                             }
                                             //修正
                                             kline_close_tp += 1;
+                                            report_rest_summary(
+                                                &sender_clone,
+                                                symbol_owned.as_str(),
+                                                kline_close_tp,
+                                                &rest_summary,
+                                                RestSummaryStage::OneMinute,
+                                            );
                                             if is_five_minute_boundary(kline_close_tp) {
                                                 sleep(Duration::from_secs(180)).await;
                                                 info!(
@@ -791,14 +904,14 @@ impl Parser for BinanceKlineParser {
                                                 let mut account_data: Option<RatioMetrics> = None;
                                                 match account_res {
                                                     Ok(data) => {
-                                                        rest_results.push(RestResult::success(
+                                                        rest_summary.update(RestResult::success(
                                                             RestRequestType::TopAccount,
                                                             format!("ts={}", data.timestamp),
                                                         ));
                                                         account_data = Some(data);
                                                     }
                                                     Err(err) => {
-                                                        rest_results.push(RestResult::failure(
+                                                        rest_summary.update(RestResult::failure(
                                                             RestRequestType::TopAccount,
                                                             err.detail(),
                                                         ));
@@ -808,14 +921,14 @@ impl Parser for BinanceKlineParser {
                                                 let mut position_data: Option<RatioMetrics> = None;
                                                 match position_res {
                                                     Ok(data) => {
-                                                        rest_results.push(RestResult::success(
+                                                        rest_summary.update(RestResult::success(
                                                             RestRequestType::TopPosition,
                                                             format!("ts={}", data.timestamp),
                                                         ));
                                                         position_data = Some(data);
                                                     }
                                                     Err(err) => {
-                                                        rest_results.push(RestResult::failure(
+                                                        rest_summary.update(RestResult::failure(
                                                             RestRequestType::TopPosition,
                                                             err.detail(),
                                                         ));
@@ -825,14 +938,14 @@ impl Parser for BinanceKlineParser {
                                                 let mut global_data: Option<RatioMetrics> = None;
                                                 match global_res {
                                                     Ok(data) => {
-                                                        rest_results.push(RestResult::success(
+                                                        rest_summary.update(RestResult::success(
                                                             RestRequestType::GlobalAccount,
                                                             format!("ts={}", data.timestamp),
                                                         ));
                                                         global_data = Some(data);
                                                     }
                                                     Err(err) => {
-                                                        rest_results.push(RestResult::failure(
+                                                        rest_summary.update(RestResult::failure(
                                                             RestRequestType::GlobalAccount,
                                                             err.detail(),
                                                         ));
@@ -843,14 +956,14 @@ impl Parser for BinanceKlineParser {
                                                     None;
                                                 match oi_hist_res {
                                                     Ok(data) => {
-                                                        rest_results.push(RestResult::success(
+                                                        rest_summary.update(RestResult::success(
                                                             RestRequestType::OpenInterestHist,
                                                             format!("ts={}", data.timestamp),
                                                         ));
                                                         oi_hist_data = Some(data);
                                                     }
                                                     Err(err) => {
-                                                        rest_results.push(RestResult::failure(
+                                                        rest_summary.update(RestResult::failure(
                                                             RestRequestType::OpenInterestHist,
                                                             err.detail(),
                                                         ));
@@ -926,12 +1039,12 @@ impl Parser for BinanceKlineParser {
                                                     }
                                                 }
                                             }
-
                                             report_rest_summary(
                                                 &sender_clone,
                                                 symbol_owned.as_str(),
                                                 kline_close_tp,
-                                                &rest_results,
+                                                &rest_summary,
+                                                RestSummaryStage::FiveMinute,
                                             );
                                         });
                                     }

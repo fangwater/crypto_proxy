@@ -16,7 +16,8 @@ pub enum MktMsgType {
     PremiumIndexKline = 1015,
     BinanceIncSeqNo = 1016,
     BinanceTopLongShortRatio = 1017,
-    RestSummary = 1018,
+    RestSummary1m = 1018,
+    RestSummary5m = 1019,
     Error = 2222,
 }
 
@@ -58,6 +59,7 @@ impl RestRequestType {
     }
 }
 
+#[derive(Clone)]
 pub struct RestSummaryEntry {
     pub request_type: RestRequestType,
     pub success: bool,
@@ -76,49 +78,113 @@ impl RestSummaryEntry {
     fn detail_len(&self) -> usize {
         self.detail.as_bytes().len()
     }
+
+    fn write_to(&self, buf: &mut BytesMut) {
+        buf.put_u8(self.request_type as u8);
+        buf.put_u8(self.success as u8);
+        let detail_bytes = self.detail.as_bytes();
+        buf.put_u32_le(detail_bytes.len() as u32);
+        buf.put(detail_bytes);
+    }
 }
 
-pub struct RestSummaryMsg {
+pub struct RestSummary1mMsg {
     pub msg_type: MktMsgType,
     pub symbol_length: u32,
     pub symbol: String,
     pub close_tp: i64,
-    pub results: Vec<RestSummaryEntry>,
+    pub premium_index: RestSummaryEntry,
+    pub open_interest: RestSummaryEntry,
 }
 
-impl RestSummaryMsg {
-    pub fn create(symbol: String, close_tp: i64, results: Vec<RestSummaryEntry>) -> Self {
+impl RestSummary1mMsg {
+    pub fn create(
+        symbol: String,
+        close_tp: i64,
+        premium_index: RestSummaryEntry,
+        open_interest: RestSummaryEntry,
+    ) -> Self {
         let symbol_length = symbol.len() as u32;
         Self {
-            msg_type: MktMsgType::RestSummary,
+            msg_type: MktMsgType::RestSummary1m,
             symbol_length,
             symbol,
             close_tp,
-            results,
+            premium_index,
+            open_interest,
         }
     }
 
     pub fn to_bytes(&self) -> Bytes {
         let symbol_len = self.symbol_length as usize;
-        let mut total_size = 4 + 4 + symbol_len + 8 + 4;
-        for entry in &self.results {
-            total_size += 1 + 1 + 4 + entry.detail_len();
-        }
+        let mut total_size = 4 + 4 + symbol_len + 8;
+        total_size += 1 + 1 + 4 + self.premium_index.detail_len();
+        total_size += 1 + 1 + 4 + self.open_interest.detail_len();
 
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
         buf.put_u32_le(self.symbol_length);
         buf.put(self.symbol.as_bytes());
         buf.put_i64_le(self.close_tp);
-        buf.put_u32_le(self.results.len() as u32);
 
-        for entry in &self.results {
-            buf.put_u8(entry.request_type as u8);
-            buf.put_u8(entry.success as u8);
-            let detail_bytes = entry.detail.as_bytes();
-            buf.put_u32_le(detail_bytes.len() as u32);
-            buf.put(detail_bytes);
+        self.premium_index.write_to(&mut buf);
+        self.open_interest.write_to(&mut buf);
+
+        buf.freeze()
+    }
+}
+
+pub struct RestSummary5mMsg {
+    pub msg_type: MktMsgType,
+    pub symbol_length: u32,
+    pub symbol: String,
+    pub close_tp: i64,
+    pub top_account: RestSummaryEntry,
+    pub top_position: RestSummaryEntry,
+    pub global_account: RestSummaryEntry,
+    pub open_interest_hist: RestSummaryEntry,
+}
+
+impl RestSummary5mMsg {
+    pub fn create(
+        symbol: String,
+        close_tp: i64,
+        top_account: RestSummaryEntry,
+        top_position: RestSummaryEntry,
+        global_account: RestSummaryEntry,
+        open_interest_hist: RestSummaryEntry,
+    ) -> Self {
+        let symbol_length = symbol.len() as u32;
+        Self {
+            msg_type: MktMsgType::RestSummary5m,
+            symbol_length,
+            symbol,
+            close_tp,
+            top_account,
+            top_position,
+            global_account,
+            open_interest_hist,
         }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let symbol_len = self.symbol_length as usize;
+        let mut total_size = 4 + 4 + symbol_len + 8;
+        total_size += 1 + 1 + 4 + self.top_account.detail_len();
+        total_size += 1 + 1 + 4 + self.top_position.detail_len();
+        total_size += 1 + 1 + 4 + self.global_account.detail_len();
+        total_size += 1 + 1 + 4 + self.open_interest_hist.detail_len();
+
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_u32_le(self.symbol_length);
+        buf.put(self.symbol.as_bytes());
+        buf.put_i64_le(self.close_tp);
+
+        self.top_account.write_to(&mut buf);
+        self.top_position.write_to(&mut buf);
+        self.global_account.write_to(&mut buf);
+        self.open_interest_hist.write_to(&mut buf);
 
         buf.freeze()
     }
