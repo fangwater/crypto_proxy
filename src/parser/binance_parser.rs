@@ -611,7 +611,6 @@ impl Parser for BinanceKlineParser {
                                                     return;
                                                 }
                                             };
-
                                             let secondary = records.get(1).and_then(parse_record);
 
                                             let primary_open_time = primary.0;
@@ -852,11 +851,6 @@ impl Parser for BinanceKlineParser {
                                             );
                                             if is_five_minute_boundary(kline_close_tp) {
                                                 sleep(Duration::from_secs(180)).await;
-                                                info!(
-                                                    "[Binance Ratio Trigger] symbol={} close_time={}",
-                                                    symbol_owned,
-                                                    kline_close_tp
-                                                );
                                                 let ratio_symbol = symbol_owned.clone();
                                                 let ratio_client = client_clone.clone();
                                                 let ratio_sender = sender_clone.clone();
@@ -1014,11 +1008,6 @@ impl Parser for BinanceKlineParser {
                                                             ratio_symbol, err
                                                         );
                                                     }
-                                                    info!(
-                                                        "[Binance Ratio Broadcast] symbol={} close_time={}",
-                                                        ratio_symbol,
-                                                        kline_close_tp
-                                                    );
                                                     if ratio_symbol.to_lowercase() == "btcusdt" {
                                                         info!(
                                                             "[Binance Top LongShort] {}: account(long={}, short={}, ratio={}, ts={}), position(long={}, short={}, ratio={}, ts={}), global(long={}, short={}, ratio={}, ts={})",
@@ -1038,14 +1027,14 @@ impl Parser for BinanceKlineParser {
                                                         );
                                                     }
                                                 }
+                                                report_rest_summary(
+                                                    &sender_clone,
+                                                    symbol_owned.as_str(),
+                                                    kline_close_tp,
+                                                    &rest_summary,
+                                                    RestSummaryStage::FiveMinute,
+                                                );
                                             }
-                                            report_rest_summary(
-                                                &sender_clone,
-                                                symbol_owned.as_str(),
-                                                kline_close_tp,
-                                                &rest_summary,
-                                                RestSummaryStage::FiveMinute,
-                                            );
                                         });
                                     }
                                 }
