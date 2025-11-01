@@ -254,23 +254,9 @@ pub struct BinanceKlineParser {
 }
 
 impl BinanceKlineParser {
-    pub fn new(is_future: bool, rest_cfg: Option<&BinanceRestCfg>) -> Self {
-        if is_future {
-            let cfg = rest_cfg.expect("Binance futures kline parser requires REST config");
-            Self {
-                is_future,
-                http_client: Some(reqwest::Client::new()),
-                premium_index_klines_url: Some(cfg.premium_index_klines_url()),
-                open_interest_url: Some(cfg.open_interest_url()),
-                open_interest_hist_url: Some(cfg.open_interest_hist_url()),
-                top_long_short_account_ratio_url: Some(cfg.top_long_short_account_ratio_url()),
-                top_long_short_position_ratio_url: Some(cfg.top_long_short_position_ratio_url()),
-                global_long_short_account_ratio_url: Some(
-                    cfg.global_long_short_account_ratio_url(),
-                ),
-            }
-        } else {
-            Self {
+    pub fn new(is_future: bool, rest_cfg: Option<&BinanceRestCfg>, is_primary: bool) -> Self {
+        if !is_future {
+            return Self {
                 is_future,
                 http_client: None,
                 premium_index_klines_url: None,
@@ -279,7 +265,32 @@ impl BinanceKlineParser {
                 top_long_short_account_ratio_url: None,
                 top_long_short_position_ratio_url: None,
                 global_long_short_account_ratio_url: None,
-            }
+            };
+        }
+
+        if !is_primary {
+            return Self {
+                is_future,
+                http_client: None,
+                premium_index_klines_url: None,
+                open_interest_url: None,
+                open_interest_hist_url: None,
+                top_long_short_account_ratio_url: None,
+                top_long_short_position_ratio_url: None,
+                global_long_short_account_ratio_url: None,
+            };
+        }
+
+        let cfg = rest_cfg.expect("Binance futures kline parser requires REST config");
+        Self {
+            is_future,
+            http_client: Some(reqwest::Client::new()),
+            premium_index_klines_url: Some(cfg.premium_index_klines_url()),
+            open_interest_url: Some(cfg.open_interest_url()),
+            open_interest_hist_url: Some(cfg.open_interest_hist_url()),
+            top_long_short_account_ratio_url: Some(cfg.top_long_short_account_ratio_url()),
+            top_long_short_position_ratio_url: Some(cfg.top_long_short_position_ratio_url()),
+            global_long_short_account_ratio_url: Some(cfg.global_long_short_account_ratio_url()),
         }
     }
 }

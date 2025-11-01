@@ -75,10 +75,12 @@ impl KlineDataConnectionManager {
             "binance-futures" => Ok(Box::new(BinanceKlineParser::new(
                 true,
                 Some(&self.cfg.binance_rest),
+                self.cfg.is_primary,
             ))),
             "binance" => Ok(Box::new(BinanceKlineParser::new(
                 false,
                 Some(&self.cfg.binance_rest),
+                self.cfg.is_primary,
             ))),
             "bybit" | "bybit-spot" => Ok(Box::new(BybitKlineParser::new())),
             "okex-swap" | "okex" => Ok(Box::new(OkexKlineParser::new())),
