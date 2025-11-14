@@ -1,12 +1,15 @@
 use crate::Exchange;
 use anyhow::{Context, Result};
-use log::info;
+use chrono::Utc;
+use log::{info, warn};
 use prettytable::{format, Cell, Row, Table};
 use serde::Deserialize;
 use serde_yaml;
-use tokio::fs;
-use tokio::io::AsyncReadExt;
+use std::path::{Path, PathBuf};
+use tokio::fs::{self, File};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+use uuid::Uuid;
 
 fn default_binance_base_url() -> String {
     "https://data-api.binance.vision".to_string()
@@ -91,6 +94,7 @@ struct ConfigFile {
     restart_duration_secs: u64,
     snapshot_requery_time: Option<String>,
     symbol_socket: String,
+    symbol_snapshot_dir: Option<String>,
     binance: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
     binance_futures: ZmqProxyCfg,
@@ -171,6 +175,7 @@ pub struct Config {
     pub restart_duration_secs: u64,
     pub snapshot_requery_time: Option<String>,
     pub symbol_socket: String,
+    pub symbol_snapshot_dir: String,
     pub exchange: Exchange, // 在运行时设置，不从配置文件读取
     pub binance: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
@@ -191,6 +196,12 @@ impl Config {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path).await?;
         let config_file: ConfigFile = serde_yaml::from_str(&content)?;
+        let symbol_socket_base = config_file.symbol_socket.clone();
+        let symbol_snapshot_dir = config_file
+            .symbol_snapshot_dir
+            .clone()
+            .unwrap_or_else(|| format!("{}/snapshots", symbol_socket_base));
+        Self::ensure_snapshot_dir(Path::new(&symbol_snapshot_dir)).await?;
 
         // 构造 Config 结构体
         let config = Config {
@@ -198,6 +209,7 @@ impl Config {
             restart_duration_secs: config_file.restart_duration_secs,
             snapshot_requery_time: config_file.snapshot_requery_time,
             symbol_socket: config_file.symbol_socket,
+            symbol_snapshot_dir,
             exchange, // 从命令行参数设置
             binance: config_file.binance,
             binance_futures: config_file.binance_futures,
@@ -437,28 +449,39 @@ impl Config {
     }
 
     pub async fn get_symbols(&self) -> Result<Vec<String>> {
-        match self.exchange {
+        let symbols = match self.exchange {
             //币安u本位期货合约
             Exchange::BinanceFutures => {
-                Self::get_symbol_for_binance_futures(&self.symbol_socket).await
+                Self::get_symbol_for_binance_futures(&self.symbol_socket).await?
             }
             //币安u本位期货合约对应的现货
             Exchange::Binance => {
-                Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await
+                Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await?
             }
             //OKEXu本位期货合约
-            Exchange::OkexSwap => Self::get_symbol_for_okex_swap(&self.symbol_socket).await,
+            Exchange::OkexSwap => Self::get_symbol_for_okex_swap(&self.symbol_socket).await?,
             //OKEXu本位期货合约对应的现货
             Exchange::Okex => {
-                Self::get_spot_symbols_related_to_okex_swap(&self.symbol_socket).await
+                Self::get_spot_symbols_related_to_okex_swap(&self.symbol_socket).await?
             }
             //Bybitu本位期货合约
-            Exchange::Bybit => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await,
+            Exchange::Bybit => Self::get_symbol_for_bybit_linear(&self.symbol_socket).await?,
             //Bybitu本位期货合约对应的现货
             Exchange::BybitSpot => {
-                Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await
+                Self::get_spot_symbols_related_to_bybit(&self.symbol_socket).await?
             }
+        };
+        if let Err(err) = self
+            .write_symbol_snapshot(&self.get_exchange(), &symbols)
+            .await
+        {
+            warn!(
+                "Failed to write symbol snapshot for {}: {}",
+                self.get_exchange(),
+                err
+            );
         }
+        Ok(symbols)
     }
 
     fn remove_leverage_prefix(symbol: &str) -> &str {
@@ -502,5 +525,67 @@ impl Config {
         }
         // okex没有杠杆合约的情况，所以不需要处理
         false
+    }
+
+    async fn ensure_snapshot_dir(path: &Path) -> Result<()> {
+        if !path.exists() {
+            fs::create_dir_all(path)
+                .await
+                .context("Failed to create symbol snapshot directory")?;
+        }
+        Ok(())
+    }
+
+    async fn write_symbol_snapshot(
+        &self,
+        exchange: &str,
+        symbols: &[String],
+    ) -> Result<()> {
+        let snapshot_path = PathBuf::from(&self.symbol_snapshot_dir)
+            .join(format!("{}_symbols.json", exchange));
+        if let Some(parent) = snapshot_path.parent() {
+            Self::ensure_snapshot_dir(parent).await?;
+        }
+
+        let tmp_path = snapshot_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!(
+                "{}_symbols.json.tmp.{}",
+                exchange,
+                Uuid::new_v4().to_string()
+            ));
+
+        let snapshot = serde_json::json!({
+            "exchange": exchange,
+            "updated_at": Utc::now().to_rfc3339(),
+            "symbols": symbols,
+        });
+        let payload = serde_json::to_vec_pretty(&snapshot)?;
+
+        {
+            let mut file = File::create(&tmp_path)
+                .await
+                .context("Failed to create temporary snapshot file")?;
+            file.write_all(&payload)
+                .await
+                .context("Failed to write snapshot payload")?;
+            file.flush()
+                .await
+                .context("Failed to flush snapshot file")?;
+            file.sync_all()
+                .await
+                .context("Failed to sync snapshot file")?;
+        }
+
+        fs::rename(&tmp_path, &snapshot_path)
+            .await
+            .context("Failed to atomically replace snapshot file")?;
+        info!(
+            "Symbol snapshot written: {} ({} symbols)",
+            snapshot_path.display(),
+            symbols.len()
+        );
+        Ok(())
     }
 }

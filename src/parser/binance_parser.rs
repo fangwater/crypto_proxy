@@ -14,7 +14,7 @@ use tokio::time::{sleep, Duration};
 
 const ONE_MINUTE_MILLIS: i64 = 60_000;
 const FIVE_MINUTE_MILLIS: i64 = 5 * ONE_MINUTE_MILLIS;
-const PREMIUM_INDEX_DELAY_SECS: u64 = 10;
+const PREMIUM_INDEX_DELAY_SECS: u64 = 3;
 
 #[derive(Clone)]
 struct RestResult {

@@ -25,11 +25,16 @@ check_status() {
     fi
 }
 
+# 部署模式: full 或 bin_only
+DEPLOY_MODE=${DEPLOY_MODE:-full}
+
 # 服务器配置
 # 格式: "IP:角色" (角色: primary 或 secondary)
 SERVERS=(
-    # "103.90.136.194:primary"
+    "103.90.136.194:primary"
     "103.90.136.195:secondary"
+    # "178.173.241.34:primary"
+    # "178.173.241.35:secondary"
     # "103.90.136.196:primary"
     # "103.90.136.197:secondary"
 )
@@ -67,6 +72,13 @@ log "开始编译项目..."
 cargo build --release -j2
 check_status "项目编译"
 
+# 记录部署模式
+if [ "$DEPLOY_MODE" = "bin_only" ]; then
+    log "当前部署模式: 仅更新二进制，跳过脚本同步"
+else
+    log "当前部署模式: 全量部署（二进制 + 脚本）"
+fi
+
 # 部署二进制文件和脚本
 log "开始部署..."
 
@@ -85,20 +97,21 @@ for server_config in "${SERVERS[@]}"; do
     ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/crypto_proxy"
     check_status "设置 $ip 上的二进制文件权限"
     
-    # 部署脚本文件
-    scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir/
-    check_status "复制脚本文件到 $ip"
-    
-    ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh"
-    check_status "设置 $ip 上的脚本文件权限"
+    if [ "$DEPLOY_MODE" != "bin_only" ]; then
+        # 部署脚本文件
+        scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir/
+        check_status "复制脚本文件到 $ip"
+        
+        ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh"
+        check_status "设置 $ip 上的脚本文件权限"
+    else
+        log "跳过服务器 $ip 的启动/停止脚本同步"
+    fi
     
     log "服务器 $ip ($role) 部署完成！"
 done
 
 log "所有服务器部署完成！"
-
-
-
 
 
 
