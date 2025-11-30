@@ -536,13 +536,9 @@ impl Config {
         Ok(())
     }
 
-    async fn write_symbol_snapshot(
-        &self,
-        exchange: &str,
-        symbols: &[String],
-    ) -> Result<()> {
-        let snapshot_path = PathBuf::from(&self.symbol_snapshot_dir)
-            .join(format!("{}_symbols.json", exchange));
+    async fn write_symbol_snapshot(&self, exchange: &str, symbols: &[String]) -> Result<()> {
+        let snapshot_path =
+            PathBuf::from(&self.symbol_snapshot_dir).join(format!("{}_symbols.json", exchange));
         if let Some(parent) = snapshot_path.parent() {
             Self::ensure_snapshot_dir(parent).await?;
         }

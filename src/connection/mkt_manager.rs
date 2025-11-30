@@ -1,6 +1,7 @@
 use crate::cfg::Config;
 use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
 use crate::connection::connection::construct_connection;
+use crate::mkt_msg::{SignalMsg, SignalSource};
 use crate::parser::binance_parser::{
     BinanceIncParser, BinanceSignalParser, BinanceSnapshotParser, BinanceTradeParser,
 };
@@ -14,7 +15,7 @@ use log::{error, info};
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch, Notify};
 use tokio::task::JoinSet;
-use tokio::time::{Duration, Instant};
+use tokio::time::{Duration, Instant, MissedTickBehavior};
 
 //订阅逐笔行情，orderbook增量消息，通过parser处理后转发
 
@@ -180,6 +181,34 @@ impl MktDataConnectionManager {
         });
     }
 
+    pub fn start_local_timesignal_task(&mut self) {
+        let mut global_shutdown_rx = self.global_shutdown_rx.clone();
+        let mkt_tx = self.mkt_tx.clone();
+
+        self.join_set.spawn(async move {
+            let mut timer = tokio::time::interval(Duration::from_millis(100));
+            timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    _ = global_shutdown_rx.changed() => {
+                        if *global_shutdown_rx.borrow() {
+                            info!("本地 timesignal 任务收到关闭信号，准备退出");
+                            break;
+                        }
+                    }
+                    _ = timer.tick() => {
+                        let timestamp = Utc::now().timestamp_millis();
+                        let msg = SignalMsg::create(SignalSource::Ipc, timestamp);
+                        let _ = mkt_tx.send(msg.to_bytes());
+                    }
+                }
+            }
+
+            info!("本地 timesignal 任务已结束");
+        });
+    }
+
     pub async fn start_all_connections(&mut self) {
         // 1. 启动所有增量连接
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
@@ -318,6 +347,9 @@ impl MktDataConnectionManager {
 
         // 4. 启动币安快照查询任务（仅主节点且为币安交易所）
         self.start_snapshot_task().await;
+
+        // 5. 启动本地冗余 timesignal 任务
+        self.start_local_timesignal_task();
 
         log::info!("All connections started...");
     }
