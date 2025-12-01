@@ -951,13 +951,20 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
 
         // 发送1分钟封bar消息
         let bar_close_msg = BarClose1mMsg::create(close_time);
+        info!(
+            "{REST_MONITOR_TAG} [BarClose1m] 准备发送封bar消息 | close_time={}",
+            close_time
+        );
         if let Err(e) = sender.send(bar_close_msg.to_bytes()) {
             error!(
                 "{REST_MONITOR_TAG} Failed to send BarClose1mMsg for close_time={}: {}",
                 close_time, e
             );
         } else {
-            info!("{REST_MONITOR_TAG} [BarClose1m] sent for close_time={}", close_time);
+            info!(
+                "{REST_MONITOR_TAG} [BarClose1m] 封bar消息发送成功 | close_time={}",
+                close_time
+            );
         }
 
         // 如果是5分钟边界，执行5分钟请求
