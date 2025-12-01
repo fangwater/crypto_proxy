@@ -169,8 +169,8 @@ pub async fn fetch_futures_symbols(base_url: &str) -> Result<Vec<String>, FetchE
         .await
         .map_err(|e| FetchError::Request(e.to_string()))?;
 
-    let info: ExchangeInfoResponse = serde_json::from_str(&body)
-        .map_err(|e| FetchError::Json(e.to_string()))?;
+    let info: ExchangeInfoResponse =
+        serde_json::from_str(&body).map_err(|e| FetchError::Json(e.to_string()))?;
 
     let symbols: Vec<String> = info
         .symbols
@@ -289,16 +289,14 @@ async fn fetch_premium_index(
     // 解析记录
     let parse_record = |record: &Vec<serde_json::Value>| -> Option<(i64, f64, f64, f64, f64)> {
         let parse_i64 = |idx: usize| -> Option<i64> {
-            record.get(idx).and_then(|v| {
-                v.as_i64()
-                    .or_else(|| v.as_str()?.parse::<i64>().ok())
-            })
+            record
+                .get(idx)
+                .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse::<i64>().ok()))
         };
         let parse_f64 = |idx: usize| -> Option<f64> {
-            record.get(idx).and_then(|v| {
-                v.as_f64()
-                    .or_else(|| v.as_str()?.parse::<f64>().ok())
-            })
+            record
+                .get(idx)
+                .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse::<f64>().ok()))
         };
         Some((
             parse_i64(0)?,
@@ -359,14 +357,8 @@ async fn fetch_open_interest(
     symbol: &str,
 ) -> Result<OpenInterestData, FetchError> {
     let url = format!("{}/fapi/v1/openInterest", base_url);
-    let body = fetch_with_retry(
-        client,
-        &url,
-        &[("symbol", symbol)],
-        "OpenInterest",
-        symbol,
-    )
-    .await?;
+    let body =
+        fetch_with_retry(client, &url, &[("symbol", symbol)], "OpenInterest", symbol).await?;
 
     let json: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| FetchError::Json(e.to_string()))?;
@@ -436,9 +428,7 @@ async fn fetch_ratio_metrics(
         .ok_or_else(|| {
             warn!(
                 "{REST_MONITOR_TAG} [{}] {} timestamp mismatch at close_time {}",
-                label,
-                symbol,
-                close_time
+                label, symbol, close_time
             );
             FetchError::MatchFailure
         })?;
@@ -506,8 +496,7 @@ async fn fetch_open_interest_hist(
         .ok_or_else(|| {
             warn!(
                 "{REST_MONITOR_TAG} [OpenInterestHist] {} timestamp mismatch at close_time {}",
-                symbol,
-                close_time
+                symbol, close_time
             );
             FetchError::MatchFailure
         })?;
@@ -557,7 +546,10 @@ impl BinanceRestFetcher {
             .map_err(|e| FetchError::Request(e.to_string()))?;
 
         // 获取 symbol 列表
-        info!("{REST_MONITOR_TAG} Fetching futures symbols from {}", base_url);
+        info!(
+            "{REST_MONITOR_TAG} Fetching futures symbols from {}",
+            base_url
+        );
         let symbols = fetch_futures_symbols(&base_url).await?;
         info!(
             "{REST_MONITOR_TAG} Fetched {} futures symbols",
@@ -738,7 +730,8 @@ impl BinanceRestFetcher {
                 let base_url = self.base_url.clone();
                 let symbol = symbol.clone();
                 async move {
-                    let result = fetch_open_interest_hist(&client, &base_url, &symbol, close_time).await;
+                    let result =
+                        fetch_open_interest_hist(&client, &base_url, &symbol, close_time).await;
                     (symbol, result)
                 }
             })
@@ -866,7 +859,11 @@ fn print_five_minute_summary(result: &FiveMinuteResult) {
     let ta_success = result.top_account.iter().filter(|r| r.is_ok()).count();
     let tp_success = result.top_position.iter().filter(|r| r.is_ok()).count();
     let ga_success = result.global_account.iter().filter(|r| r.is_ok()).count();
-    let oh_success = result.open_interest_hist.iter().filter(|r| r.is_ok()).count();
+    let oh_success = result
+        .open_interest_hist
+        .iter()
+        .filter(|r| r.is_ok())
+        .count();
 
     let total = result.top_account.len();
 
@@ -890,7 +887,10 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
     let mut fetcher = match BinanceRestFetcher::new(base_url).await {
         Ok(f) => f,
         Err(e) => {
-            error!("{REST_MONITOR_TAG} Failed to create BinanceRestFetcher: {:?}", e);
+            error!(
+                "{REST_MONITOR_TAG} Failed to create BinanceRestFetcher: {:?}",
+                e
+            );
             return;
         }
     };
@@ -907,7 +907,8 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
         let (next_instant, close_time) = next_minute_boundary();
         info!(
             "{REST_MONITOR_TAG} waiting for next minute boundary | close_time={} | wait={:?}",
-            close_time, next_instant - Instant::now()
+            close_time,
+            next_instant - Instant::now()
         );
         sleep_until(next_instant).await;
 
@@ -1000,7 +1001,8 @@ fn send_one_minute_messages(result: &OneMinuteResult, sender: &broadcast::Sender
 
     // 将 PremiumIndex 和 OpenInterest 合并成 PremiumIndexKlineMsg
     // 创建一个 HashMap 来匹配 symbol
-    let mut oi_map: std::collections::HashMap<String, &OpenInterestData> = std::collections::HashMap::new();
+    let mut oi_map: std::collections::HashMap<String, &OpenInterestData> =
+        std::collections::HashMap::new();
     for r in &result.open_interest {
         if let Ok(data) = r {
             oi_map.insert(data.symbol.clone(), data);
@@ -1046,10 +1048,14 @@ fn send_five_minute_messages(result: &FiveMinuteResult, sender: &broadcast::Send
     let close_time = result.close_time;
 
     // 创建 HashMap 来匹配各类数据
-    let mut top_account_map: std::collections::HashMap<String, &RatioMetricsData> = std::collections::HashMap::new();
-    let mut top_position_map: std::collections::HashMap<String, &RatioMetricsData> = std::collections::HashMap::new();
-    let mut global_account_map: std::collections::HashMap<String, &RatioMetricsData> = std::collections::HashMap::new();
-    let mut oi_hist_map: std::collections::HashMap<String, &OpenInterestHistData> = std::collections::HashMap::new();
+    let mut top_account_map: std::collections::HashMap<String, &RatioMetricsData> =
+        std::collections::HashMap::new();
+    let mut top_position_map: std::collections::HashMap<String, &RatioMetricsData> =
+        std::collections::HashMap::new();
+    let mut global_account_map: std::collections::HashMap<String, &RatioMetricsData> =
+        std::collections::HashMap::new();
+    let mut oi_hist_map: std::collections::HashMap<String, &OpenInterestHistData> =
+        std::collections::HashMap::new();
 
     for r in &result.top_account {
         if let Ok(data) = r {

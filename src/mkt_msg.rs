@@ -78,6 +78,7 @@ pub struct KlineMsg {
     pub trade_num: i64,
     pub taker_buy_vol: f64,
     pub taker_buy_quote_vol: f64,
+    pub event_time: i64,
 }
 
 pub struct FundingRateMsg {
@@ -439,6 +440,7 @@ impl KlineMsg {
         volume: f64,
         turnover: f64,
         timestamp: i64,
+        event_time: i64,
     ) -> Self {
         let symbol_length = symbol.len() as u32;
         Self {
@@ -456,6 +458,7 @@ impl KlineMsg {
             trade_num: 0,
             taker_buy_vol: 0.0,
             taker_buy_quote_vol: 0.0,
+            event_time,
         }
     }
 
@@ -472,8 +475,8 @@ impl KlineMsg {
 
     /// Convert message to bytes
     pub fn to_bytes(&self) -> Bytes {
-        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 6*f64(8*6) + timestamp(8) + 1*i64(8) + 2*f64(8*2)
-        let total_size = 4 + 4 + self.symbol_length as usize + 6 * 8 + 8 + 8 + 2 * 8;
+        // Calculate total size: msg_type(4) + symbol_length(4) + symbol + 6*f64 + timestamp(8) + event_time(8) + trade_num(8) + 2*f64
+        let total_size = 4 + 4 + self.symbol_length as usize + 6 * 8 + 8 + 8 + 8 + 2 * 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         // Write header
@@ -493,6 +496,7 @@ impl KlineMsg {
 
         // Write timestamp
         buf.put_i64_le(self.timestamp);
+        buf.put_i64_le(self.event_time);
 
         // Write Binance-specific fields
         buf.put_i64_le(self.trade_num);

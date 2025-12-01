@@ -63,6 +63,7 @@ impl Parser for BinanceKlineParser {
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json_str) {
                 // 从顶层s字段直接获取symbol
                 if let Some(symbol) = json_value.get("s").and_then(|v| v.as_str()) {
+                    let event_time = json_value.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
                     // 获取k对象中的K线数据
                     if let Some(kline_obj) = json_value.get("k") {
                         // 获取x字段判断是否已关闭（用于日志）
@@ -126,6 +127,12 @@ impl Parser for BinanceKlineParser {
                                 taker_buy_quote_vol_str.parse::<f64>(),
                             ) {
                                 // 创建K线消息
+                                let event_time = if event_time == 0 {
+                                    timestamp
+                                } else {
+                                    event_time
+                                };
+
                                 let mut kline_msg = KlineMsg::create(
                                     symbol.to_string(),
                                     open,
@@ -135,6 +142,7 @@ impl Parser for BinanceKlineParser {
                                     volume,
                                     turnover,
                                     timestamp,
+                                    event_time,
                                 );
 
                                 // 设置币安专属字段

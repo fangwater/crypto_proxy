@@ -125,6 +125,7 @@ impl Parser for BybitKlineParser {
                                                 volume,
                                                 turnover,
                                                 closed_timestamp,
+                                                timestamp,
                                             );
 
                                             // 发送K线消息

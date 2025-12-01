@@ -129,6 +129,7 @@ impl Parser for OkexKlineParser {
                                             volume,
                                             turnover,
                                             timestamp,
+                                            timestamp,
                                         );
 
                                         // Send kline message
