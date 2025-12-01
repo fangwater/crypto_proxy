@@ -22,6 +22,7 @@ use crate::mkt_msg::{BarClose1mMsg, PremiumIndexKlineMsg, TopLongShortRatioMsg};
 
 const ONE_MINUTE_MILLIS: i64 = 60_000;
 const FIVE_MINUTE_MILLIS: i64 = 5 * ONE_MINUTE_MILLIS;
+const REST_MONITOR_TAG: &str = "[REST-MON]";
 
 /// 请求超时时间
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
@@ -219,8 +220,12 @@ async fn fetch_with_retry(
                     last_error = FetchError::Http(status.as_u16());
                     if attempt + 1 < MAX_RETRIES {
                         warn!(
-                            "[{}] {} HTTP {} (attempt {}/{})",
-                            label, symbol, status, attempt + 1, MAX_RETRIES
+                            "{REST_MONITOR_TAG} [{}] {} HTTP {} (attempt {}/{})",
+                            label,
+                            symbol,
+                            status,
+                            attempt + 1,
+                            MAX_RETRIES
                         );
                     }
                     continue;
@@ -242,8 +247,12 @@ async fn fetch_with_retry(
                 }
                 if attempt + 1 < MAX_RETRIES {
                     warn!(
-                        "[{}] {} request error (attempt {}/{}): {}",
-                        label, symbol, attempt + 1, MAX_RETRIES, e
+                        "{REST_MONITOR_TAG} [{}] {} request error (attempt {}/{}): {}",
+                        label,
+                        symbol,
+                        attempt + 1,
+                        MAX_RETRIES,
+                        e
                     );
                 }
             }
@@ -315,8 +324,11 @@ async fn fetch_premium_index(
         } else {
             // 时间戳不匹配，使用最新的
             warn!(
-                "[PremiumIndex] {} timestamp mismatch: expected={}, got=[{}, {:?}]",
-                symbol, expected_open_time, primary.0, secondary.map(|s| s.0)
+                "{REST_MONITOR_TAG} [PremiumIndex] {} timestamp mismatch: expected={}, got=[{}, {:?}]",
+                symbol,
+                expected_open_time,
+                primary.0,
+                secondary.map(|s| s.0)
             );
             primary
         }
@@ -324,7 +336,7 @@ async fn fetch_premium_index(
         primary
     } else {
         warn!(
-            "[PremiumIndex] {} timestamp mismatch: expected={}, got={}",
+            "{REST_MONITOR_TAG} [PremiumIndex] {} timestamp mismatch: expected={}, got={}",
             symbol, expected_open_time, primary.0
         );
         primary
@@ -423,8 +435,10 @@ async fn fetch_ratio_metrics(
         })
         .ok_or_else(|| {
             warn!(
-                "[{}] {} timestamp mismatch at close_time {}",
-                label, symbol, close_time
+                "{REST_MONITOR_TAG} [{}] {} timestamp mismatch at close_time {}",
+                label,
+                symbol,
+                close_time
             );
             FetchError::MatchFailure
         })?;
@@ -491,8 +505,9 @@ async fn fetch_open_interest_hist(
         })
         .ok_or_else(|| {
             warn!(
-                "[OpenInterestHist] {} timestamp mismatch at close_time {}",
-                symbol, close_time
+                "{REST_MONITOR_TAG} [OpenInterestHist] {} timestamp mismatch at close_time {}",
+                symbol,
+                close_time
             );
             FetchError::MatchFailure
         })?;
@@ -542,9 +557,12 @@ impl BinanceRestFetcher {
             .map_err(|e| FetchError::Request(e.to_string()))?;
 
         // 获取 symbol 列表
-        info!("Fetching futures symbols from {}", base_url);
+        info!("{REST_MONITOR_TAG} Fetching futures symbols from {}", base_url);
         let symbols = fetch_futures_symbols(&base_url).await?;
-        info!("Fetched {} futures symbols", symbols.len());
+        info!(
+            "{REST_MONITOR_TAG} Fetched {} futures symbols",
+            symbols.len()
+        );
 
         Ok(Self {
             base_url,
@@ -561,7 +579,11 @@ impl BinanceRestFetcher {
     /// 刷新 symbol 列表
     pub async fn refresh_symbols(&mut self) -> Result<(), FetchError> {
         let symbols = fetch_futures_symbols(&self.base_url).await?;
-        info!("Refreshed symbols: {} -> {}", self.symbols.len(), symbols.len());
+        info!(
+            "{REST_MONITOR_TAG} Refreshed symbols: {} -> {}",
+            self.symbols.len(),
+            symbols.len()
+        );
         self.symbols = symbols;
         Ok(())
     }
@@ -804,12 +826,8 @@ fn print_one_minute_summary(result: &OneMinuteResult) {
     let oi_fail = result.open_interest.len() - oi_success;
 
     info!(
-        "[1min Summary] close_time={} | PremiumIndex: {}/{} success | OpenInterest: {}/{} success",
-        result.close_time,
-        pi_success,
-        result.premium_index.len(),
-        oi_success,
-        result.open_interest.len()
+        "{REST_MONITOR_TAG} [1min Summary] close_time={} | PremiumIndex: {}/{} success | OpenInterest: {}/{} success",
+        result.close_time, pi_success, result.premium_index.len(), oi_success, result.open_interest.len()
     );
 
     if pi_fail > 0 || oi_fail > 0 {
@@ -818,7 +836,11 @@ fn print_one_minute_summary(result: &OneMinuteResult) {
         for r in &result.premium_index {
             if let Err((symbol, e)) = r {
                 if fail_count < 5 {
-                    warn!("  PremiumIndex failed: {} - {}", symbol, e.detail());
+                    warn!(
+                        "{REST_MONITOR_TAG}   PremiumIndex failed: {} - {}",
+                        symbol,
+                        e.detail()
+                    );
                     fail_count += 1;
                 }
             }
@@ -827,7 +849,11 @@ fn print_one_minute_summary(result: &OneMinuteResult) {
         for r in &result.open_interest {
             if let Err((symbol, e)) = r {
                 if fail_count < 5 {
-                    warn!("  OpenInterest failed: {} - {}", symbol, e.detail());
+                    warn!(
+                        "{REST_MONITOR_TAG}   OpenInterest failed: {} - {}",
+                        symbol,
+                        e.detail()
+                    );
                     fail_count += 1;
                 }
             }
@@ -845,12 +871,8 @@ fn print_five_minute_summary(result: &FiveMinuteResult) {
     let total = result.top_account.len();
 
     info!(
-        "[5min Summary] close_time={} | TopAccount: {}/{} | TopPosition: {}/{} | GlobalAccount: {}/{} | OIHist: {}/{}",
-        result.close_time,
-        ta_success, total,
-        tp_success, total,
-        ga_success, total,
-        oh_success, total
+        "{REST_MONITOR_TAG} [5min Summary] close_time={} | TopAccount: {}/{} | TopPosition: {}/{} | GlobalAccount: {}/{} | OIHist: {}/{}",
+        result.close_time, ta_success, total, tp_success, total, ga_success, total, oh_success, total
     );
 }
 
@@ -860,18 +882,21 @@ fn print_five_minute_summary(result: &FiveMinuteResult) {
 
 /// 运行 REST Fetcher 主循环（带消息推送）
 pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::Sender<Bytes>) {
-    info!("Starting BinanceRestFetcher with base_url: {} (with message sender)", base_url);
+    info!(
+        "{REST_MONITOR_TAG} Starting BinanceRestFetcher with base_url: {} (with message sender)",
+        base_url
+    );
 
     let mut fetcher = match BinanceRestFetcher::new(base_url).await {
         Ok(f) => f,
         Err(e) => {
-            error!("Failed to create BinanceRestFetcher: {:?}", e);
+            error!("{REST_MONITOR_TAG} Failed to create BinanceRestFetcher: {:?}", e);
             return;
         }
     };
 
     info!(
-        "BinanceRestFetcher initialized with {} symbols",
+        "{REST_MONITOR_TAG} BinanceRestFetcher initialized with {} symbols",
         fetcher.symbols().len()
     );
 
@@ -879,30 +904,45 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
         // 等待下一个分钟边界
         let (next_instant, close_time) = next_minute_boundary();
         info!(
-            "Waiting for next minute boundary, close_time={}, wait={:?}",
-            close_time,
-            next_instant - Instant::now()
+            "{REST_MONITOR_TAG} waiting for next minute boundary | close_time={} | wait={:?}",
+            close_time, next_instant - Instant::now()
         );
         sleep_until(next_instant).await;
 
         // 如果是5分钟边界，先刷新 symbol 列表
         if is_five_minute_boundary(close_time) {
-            info!("5-minute boundary: refreshing symbol list...");
+            info!("{REST_MONITOR_TAG} 5-minute boundary: refreshing symbol list...");
             match fetcher.refresh_symbols().await {
                 Ok(()) => {
-                    info!("Symbol list refreshed, now {} symbols", fetcher.symbols().len());
+                    info!(
+                        "{REST_MONITOR_TAG} symbol list refreshed | total_symbols={}",
+                        fetcher.symbols().len()
+                    );
                 }
                 Err(e) => {
-                    warn!("Failed to refresh symbols: {:?}, continuing with existing list", e);
+                    warn!(
+                        "{REST_MONITOR_TAG} Failed to refresh symbols: {:?}, continuing with existing list",
+                        e
+                    );
                 }
             }
         }
+
+        info!(
+            "{REST_MONITOR_TAG} close_time={} | active_symbols={}",
+            close_time,
+            fetcher.symbols().len()
+        );
 
         // 延迟等待交易所数据准备好
         tokio::time::sleep(Duration::from_millis(REQUEST_DELAY_MS)).await;
 
         // 执行1分钟请求
-        info!("Executing 1-minute requests for close_time={}", close_time);
+        info!(
+            "{REST_MONITOR_TAG} executing 1-minute requests | close_time={} | symbols={}",
+            close_time,
+            fetcher.symbols().len()
+        );
         let one_min_result = fetcher.fetch_one_minute(close_time).await;
 
         // 发送1分钟消息
@@ -912,20 +952,27 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
         // 发送1分钟封bar消息
         let bar_close_msg = BarClose1mMsg::create(close_time);
         if let Err(e) = sender.send(bar_close_msg.to_bytes()) {
-            error!("Failed to send BarClose1mMsg for close_time={}: {}", close_time, e);
+            error!(
+                "{REST_MONITOR_TAG} Failed to send BarClose1mMsg for close_time={}: {}",
+                close_time, e
+            );
         } else {
-            info!("[BarClose1m] sent for close_time={}", close_time);
+            info!("{REST_MONITOR_TAG} [BarClose1m] sent for close_time={}", close_time);
         }
 
         // 如果是5分钟边界，执行5分钟请求
         if is_five_minute_boundary(close_time) {
             info!(
-                "5-minute boundary detected, waiting {}s before 5-min requests",
+                "{REST_MONITOR_TAG} 5-minute boundary detected, waiting {}s before 5-min requests",
                 FIVE_MIN_REQUEST_DELAY_SECS
             );
             tokio::time::sleep(Duration::from_secs(FIVE_MIN_REQUEST_DELAY_SECS)).await;
 
-            info!("Executing 5-minute requests for close_time={}", close_time);
+            info!(
+                "{REST_MONITOR_TAG} executing 5-minute requests | close_time={} | symbols={}",
+                close_time,
+                fetcher.symbols().len()
+            );
             let five_min_result = fetcher.fetch_five_minute(close_time).await;
 
             // 发送5分钟消息
@@ -966,7 +1013,10 @@ fn send_one_minute_messages(result: &OneMinuteResult, sender: &broadcast::Sender
             }
 
             if let Err(e) = sender.send(msg.to_bytes()) {
-                error!("Failed to send PremiumIndexKlineMsg for {}: {}", pi_data.symbol, e);
+                error!(
+                    "{REST_MONITOR_TAG} Failed to send PremiumIndexKlineMsg for {}: {}",
+                    pi_data.symbol, e
+                );
             } else {
                 sent_count += 1;
             }
@@ -974,7 +1024,7 @@ fn send_one_minute_messages(result: &OneMinuteResult, sender: &broadcast::Sender
     }
 
     info!(
-        "[1min Broadcast] close_time={} | sent {} PremiumIndexKlineMsg",
+        "{REST_MONITOR_TAG} [1min Broadcast] close_time={} | sent {} PremiumIndexKlineMsg",
         close_time, sent_count
     );
 }
@@ -1054,7 +1104,10 @@ fn send_five_minute_messages(result: &FiveMinuteResult, sender: &broadcast::Send
             }
 
             if let Err(e) = sender.send(msg.to_bytes()) {
-                error!("Failed to send TopLongShortRatioMsg for {}: {}", symbol, e);
+                error!(
+                    "{REST_MONITOR_TAG} Failed to send TopLongShortRatioMsg for {}: {}",
+                    symbol, e
+                );
             } else {
                 sent_count += 1;
             }
@@ -1062,7 +1115,7 @@ fn send_five_minute_messages(result: &FiveMinuteResult, sender: &broadcast::Send
     }
 
     info!(
-        "[5min Broadcast] close_time={} | sent {} TopLongShortRatioMsg",
+        "{REST_MONITOR_TAG} [5min Broadcast] close_time={} | sent {} TopLongShortRatioMsg",
         close_time, sent_count
     );
 }
