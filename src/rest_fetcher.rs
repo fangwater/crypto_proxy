@@ -900,6 +900,8 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
         fetcher.symbols().len()
     );
 
+    let mut pending_five_min: Option<(i64, Instant)> = None;
+
     loop {
         // 等待下一个分钟边界
         let (next_instant, close_time) = next_minute_boundary();
@@ -926,6 +928,12 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
                     );
                 }
             }
+            let ready_instant = Instant::now() + Duration::from_secs(FIVE_MIN_REQUEST_DELAY_SECS);
+            pending_five_min = Some((close_time, ready_instant));
+            info!(
+                "{REST_MONITOR_TAG} scheduled 5-minute requests | close_time={} | will run after {}s",
+                close_time, FIVE_MIN_REQUEST_DELAY_SECS
+            );
         }
 
         info!(
@@ -968,23 +976,20 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
         }
 
         // 如果是5分钟边界，执行5分钟请求
-        if is_five_minute_boundary(close_time) {
-            info!(
-                "{REST_MONITOR_TAG} 5-minute boundary detected, waiting {}s before 5-min requests",
-                FIVE_MIN_REQUEST_DELAY_SECS
-            );
-            tokio::time::sleep(Duration::from_secs(FIVE_MIN_REQUEST_DELAY_SECS)).await;
+        if let Some((scheduled_close_time, ready_instant)) = pending_five_min {
+            if Instant::now() >= ready_instant {
+                info!(
+                    "{REST_MONITOR_TAG} executing 5-minute requests | close_time={} | symbols={}",
+                    scheduled_close_time,
+                    fetcher.symbols().len()
+                );
+                let five_min_result = fetcher.fetch_five_minute(scheduled_close_time).await;
 
-            info!(
-                "{REST_MONITOR_TAG} executing 5-minute requests | close_time={} | symbols={}",
-                close_time,
-                fetcher.symbols().len()
-            );
-            let five_min_result = fetcher.fetch_five_minute(close_time).await;
-
-            // 发送5分钟消息
-            send_five_minute_messages(&five_min_result, &sender);
-            print_five_minute_summary(&five_min_result);
+                // 发送5分钟消息
+                send_five_minute_messages(&five_min_result, &sender);
+                print_five_minute_summary(&five_min_result);
+                pending_five_min = None;
+            }
         }
     }
 }
