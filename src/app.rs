@@ -4,6 +4,7 @@ use crate::connection::kline_manager::KlineDataConnectionManager;
 use crate::connection::mkt_manager::MktDataConnectionManager;
 use crate::forwarder::ZmqForwarder;
 use crate::proxy::Proxy;
+use crate::rest_fetcher::run_rest_fetcher_with_sender;
 use crate::restart_checker::RestartChecker;
 
 use anyhow::Result;
@@ -151,8 +152,27 @@ impl CryptoProxyApp {
         // 启动所有连接
         self.start_all_connections().await;
 
+        // 为 binance-futures 启动独立的 REST Fetcher
+        if self.config.get_exchange() == "binance-futures" {
+            self.start_rest_fetcher();
+        }
+
         info!("All services started successfully");
         Ok(())
+    }
+
+    fn start_rest_fetcher(&self) {
+        info!("Starting REST Fetcher for binance-futures...");
+
+        let base_url = self.config.binance_rest.binance_futures_url.clone();
+        let sender = self.unified_tx.clone();
+
+        // 启动独立的 tokio 任务，不受 restart 影响
+        tokio::spawn(async move {
+            run_rest_fetcher_with_sender(base_url, sender).await;
+        });
+
+        info!("REST Fetcher started (independent of restart cycle)");
     }
 
     async fn start_proxy(&mut self) -> Result<()> {

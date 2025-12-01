@@ -6,6 +6,7 @@ mod mkt_msg;
 mod parser;
 mod proxy;
 mod receiver;
+mod rest_fetcher;
 mod restart_checker;
 mod sub_msg;
 use app::CryptoProxyApp;

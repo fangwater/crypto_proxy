@@ -72,16 +72,8 @@ impl KlineDataConnectionManager {
         exchange: &str,
     ) -> Result<Box<dyn Parser>, Box<dyn std::error::Error>> {
         match exchange {
-            "binance-futures" => Ok(Box::new(BinanceKlineParser::new(
-                true,
-                Some(&self.cfg.binance_rest),
-                self.cfg.is_primary,
-            ))),
-            "binance" => Ok(Box::new(BinanceKlineParser::new(
-                false,
-                Some(&self.cfg.binance_rest),
-                self.cfg.is_primary,
-            ))),
+            "binance-futures" => Ok(Box::new(BinanceKlineParser::new())),
+            "binance" => Ok(Box::new(BinanceKlineParser::new())),
             "bybit" | "bybit-spot" => Ok(Box::new(BybitKlineParser::new())),
             "okex-swap" | "okex" => Ok(Box::new(OkexKlineParser::new())),
             _ => {

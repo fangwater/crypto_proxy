@@ -44,39 +44,6 @@ impl BinanceRestCfg {
     pub fn futures_depth_url(&self) -> String {
         join_url(&self.binance_futures_url, "fapi/v1/depth")
     }
-
-    pub fn premium_index_klines_url(&self) -> String {
-        join_url(&self.binance_futures_url, "fapi/v1/premiumIndexKlines")
-    }
-
-    pub fn open_interest_url(&self) -> String {
-        join_url(&self.binance_futures_url, "fapi/v1/openInterest")
-    }
-
-    pub fn open_interest_hist_url(&self) -> String {
-        join_url(&self.binance_futures_url, "futures/data/openInterestHist")
-    }
-
-    pub fn top_long_short_position_ratio_url(&self) -> String {
-        join_url(
-            &self.binance_futures_url,
-            "futures/data/topLongShortPositionRatio",
-        )
-    }
-
-    pub fn top_long_short_account_ratio_url(&self) -> String {
-        join_url(
-            &self.binance_futures_url,
-            "futures/data/topLongShortAccountRatio",
-        )
-    }
-
-    pub fn global_long_short_account_ratio_url(&self) -> String {
-        join_url(
-            &self.binance_futures_url,
-            "futures/data/globalLongShortAccountRatio",
-        )
-    }
 }
 
 impl Default for BinanceRestCfg {
