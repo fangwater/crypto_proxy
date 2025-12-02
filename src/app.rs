@@ -4,7 +4,7 @@ use crate::connection::kline_manager::KlineDataConnectionManager;
 use crate::connection::mkt_manager::MktDataConnectionManager;
 use crate::forwarder::ZmqForwarder;
 use crate::proxy::Proxy;
-use crate::rest_fetcher::run_rest_fetcher_with_sender;
+use crate::rest_fetcher::{run_bar_close_timer, run_rest_fetcher_with_sender};
 use crate::restart_checker::RestartChecker;
 
 use anyhow::Result;
@@ -152,9 +152,19 @@ impl CryptoProxyApp {
         // 启动所有连接
         self.start_all_connections().await;
 
-        // 为 binance-futures 启动独立的 REST Fetcher
-        if self.config.get_exchange() == "binance-futures" {
-            self.start_rest_fetcher();
+        // 根据交易所类型启动相应的定时器
+        match self.config.get_exchange().as_str() {
+            "binance-futures" => {
+                // 启动完整的 REST Fetcher（包含 REST 请求 + closebar）
+                self.start_rest_fetcher();
+            }
+            "binance" => {
+                // 启动轻量级的 Bar Close Timer（仅 closebar）
+                self.start_bar_close_timer();
+            }
+            _ => {
+                info!("No bar close timer needed for exchange: {}", self.config.get_exchange());
+            }
         }
 
         info!("All services started successfully");
@@ -173,6 +183,20 @@ impl CryptoProxyApp {
         });
 
         info!("REST Fetcher started (independent of restart cycle)");
+    }
+
+    fn start_bar_close_timer(&self) {
+        info!("Starting Bar Close Timer for {}...", self.config.get_exchange());
+
+        let exchange_name = self.config.get_exchange();
+        let sender = self.unified_tx.clone();
+
+        // 启动独立的 tokio 任务，不受 restart 影响
+        tokio::spawn(async move {
+            run_bar_close_timer(exchange_name, sender).await;
+        });
+
+        info!("Bar Close Timer started (independent of restart cycle)");
     }
 
     async fn start_proxy(&mut self) -> Result<()> {
