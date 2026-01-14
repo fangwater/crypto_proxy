@@ -33,10 +33,12 @@ DEPLOY_MODE=${DEPLOY_MODE:-full}
 SERVERS=(
     #  "103.90.136.194:primary"
     # "103.90.136.195:secondary"
-     "178.173.241.34:primary"
-     "178.173.241.35:secondary"
+    # "156.231.137.90:primary"
+    # "156.231.137.91:secondary"
     # "103.90.136.196:primary"
     # "103.90.136.197:secondary"
+      "156.231.137.92:primary",
+      "156.231.137.188:secondary"
 )
 
 user=el01
