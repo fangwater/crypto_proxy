@@ -3,6 +3,7 @@ mod cfg;
 mod connection;
 mod forwarder;
 mod mkt_msg;
+mod pb;
 mod parser;
 mod proxy;
 mod receiver;

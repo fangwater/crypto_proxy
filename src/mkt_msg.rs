@@ -17,6 +17,9 @@ pub enum MktMsgType {
     BinanceIncSeqNo = 1016,
     BinanceTopLongShortRatio = 1017,
     BarClose1m = 1020, // 1分钟REST请求完成，封bar信号
+    BinanceMarginBorrowRepay = 1021,
+    BinanceMarginAvailableInventory = 1022,
+    BinanceMktStatus = 1023,
     Error = 2222,
 }
 
@@ -59,6 +62,38 @@ impl BarClose1mMsg {
         let mut buf = BytesMut::with_capacity(12);
         buf.put_u32_le(self.msg_type as u32);
         buf.put_i64_le(self.close_time);
+        buf.freeze()
+    }
+}
+
+pub struct BinanceMktStatusMsg {
+    pub msg_type: MktMsgType,
+    pub calculation_time: i64,
+    pub update_time: i64,
+    pub payload_length: u32,
+    pub payload: Bytes,
+}
+
+impl BinanceMktStatusMsg {
+    pub fn create(calculation_time: i64, update_time: i64, payload: Bytes) -> Self {
+        let payload_length = payload.len() as u32;
+        Self {
+            msg_type: MktMsgType::BinanceMktStatus,
+            calculation_time,
+            update_time,
+            payload_length,
+            payload,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Bytes {
+        let total_size = 4 + 8 + 8 + 4 + self.payload_length as usize;
+        let mut buf = BytesMut::with_capacity(total_size);
+        buf.put_u32_le(self.msg_type as u32);
+        buf.put_i64_le(self.calculation_time);
+        buf.put_i64_le(self.update_time);
+        buf.put_u32_le(self.payload_length);
+        buf.put(self.payload.as_ref());
         buf.freeze()
     }
 }

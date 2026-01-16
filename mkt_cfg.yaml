@@ -15,9 +15,6 @@ binance-futures:
   secondary_addr: "192.168.1.52:15556"
   hwm: 5000
 
-binance_rest:
-  binance_url: "https://data-api.binance.vision"
-  binance-futures_url: "https://fapi.binance.com"
 
 okex:
   ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"

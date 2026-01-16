@@ -1,0 +1,194 @@
+syntax = "proto3";
+
+package message_old;
+
+// PriceLevel 表示价格和数量
+message PriceLevel{
+  double price = 1;      // 价格
+  double amount = 2;     // 数量
+}
+
+message IncrementOrderBookInfo {
+  int64 timestamp = 1;
+  bool is_snapshot = 2;
+  repeated PriceLevel bids = 3;
+  repeated PriceLevel asks = 4;
+}
+
+message TradeInfo {
+  int64 timestamp = 1;
+  string side = 2;
+  double price = 3;
+  double amount = 4;
+}
+
+message SymbolInfo {
+  string symbol = 1;
+  repeated TradeInfo trades = 2;
+  repeated IncrementOrderBookInfo incs = 3;
+}
+
+message PeriodMessage {
+  int64 period = 1;
+  int64 ts = 2;
+  int64 post_ts = 3;
+  string poster_id = 4;
+  repeated SymbolInfo symbol_infos = 5;
+}
+
+// K线数据 (对应KlineMsg字段)
+message KlineInfo {
+  double open_price = 1;    // 对应get_open_price()
+  double high_price = 2;    // 对应get_high_price()
+  double low_price = 3;     // 对应get_low_price()
+  double close_price = 4;   // 对应get_close_price()
+  double volume = 5;        // 对应get_volume()
+  double turnover = 6;      // 对应get_turnover()
+  int64 trade_num = 7;      // 对应get_binance_trade_num()
+  double taker_buy_vol = 8;  // 对应get_binance_taker_buy_vol()
+  double taker_buy_quote_vol = 9; // 对应get_binance_taker_buy_quote_vol()
+}
+
+message KlineSymbolInfo {
+  string symbol = 1;
+  int64 timestamp = 2;      // 提取到公共部分，每个symbol只有一个timestamp
+  KlineInfo kline = 3;      // 每个symbol只有一条K线数据
+}
+
+message KlinePeriodMessage {
+  int64 period = 1;
+  int64 ts = 2;
+  int64 post_ts = 3;
+  string poster_id = 4;
+  repeated KlineSymbolInfo symbol_infos = 5;
+}
+
+// 溢价率指数K线数据 (对应PremiumIndexKlineMsg字段)
+message PremiumIndexKlineInfo {
+  double open_price = 1;    // 对应get_open_price()
+  double high_price = 2;    // 对应get_high_price()
+  double low_price = 3;     // 对应get_low_price()
+  double close_price = 4;   // 对应get_close_price()
+  double open_interest = 5; // 对应get_open_interest()
+  int64 transcation_time = 6; // 对应get_transcation_time()
+}
+
+message PremiumIndexKlineSymbolInfo {
+  string symbol = 1;
+  int64 timestamp = 2;      // 对应get_timestamp()
+  PremiumIndexKlineInfo premium_index_kline = 3;
+}
+
+message PremiumIndexKlinePeriodMessage {
+  int64 period = 1;
+  int64 ts = 2;
+  int64 post_ts = 3;
+  string poster_id = 4;
+  repeated PremiumIndexKlineSymbolInfo symbol_infos = 5;
+}
+
+// 强平数据 (对应LiquidationMsg字段)
+message LiquidationInfo {
+  int64 timestamp = 1;      // 对应get_timestamp()
+  string side = 2;          // 对应get_liquidation_side() (char转string)
+  double price = 3;         // 对应get_price()
+  double executed_qty = 4;  // 对应get_executed_qty()
+}
+
+message LiquidationSymbolInfo {
+  string symbol = 1;
+  repeated LiquidationInfo liquidations = 2;
+}
+
+message LiquidationPeriodMessage {
+  int64 period = 1;
+  int64 ts = 2;
+  int64 post_ts = 3;
+  string poster_id = 4;
+  repeated LiquidationSymbolInfo symbol_infos = 5;
+}
+
+// 衍生品指标数据 (资金费率 + 标记价格 + 指数价格)
+message FundingRateInfo {
+  double funding_rate = 1;       // 对应get_funding_rate()
+  int64 next_funding_time = 2;   // 对应get_next_funding_time()
+  double avg_funding_rate = 3;
+}
+
+message MarkPriceInfo {
+  double mark_price = 1;   // 对应get_mark_price()
+}
+
+message IndexPriceInfo {
+  double index_price = 1;   // 对应get_index_price()
+}
+
+// 衍生品综合数据 (每个类型只保存最后一条数据)
+message DerivativeInfo {
+  FundingRateInfo funding_rate = 1;     // 最后一条资金费率数据
+  MarkPriceInfo mark_price = 2;         // 最后一条标记价格数据
+  IndexPriceInfo index_price = 3;       // 最后一条指数价格数据
+}
+
+message DerivativeSymbolInfo {
+  string symbol = 1;
+  int64 funding_timestamp = 2;    // 资金费率时间戳
+  int64 mark_price_timestamp = 3; // 标记价格时间戳
+  int64 index_price_timestamp = 4;// 指数价格时间戳
+  DerivativeInfo derivatives = 5;
+}
+
+message DerivativePeriodMessage {
+  int64 period = 1;
+  int64 ts = 2;
+  int64 post_ts = 3;
+  string poster_id = 4;
+  repeated DerivativeSymbolInfo symbol_infos = 5;
+}
+
+message TopLongShortRatioInfo {
+  double top_account_long = 1;
+  double top_account_short = 2;
+  double top_account_ratio = 3;
+  double top_position_long = 4;
+  double top_position_short = 5;
+  double top_position_ratio = 6;
+  double global_account_long = 7;
+  double global_account_short = 8;
+  double global_account_ratio = 9;
+  int64 top_account_timestamp = 10;
+  int64 top_position_timestamp = 11;
+  int64 global_account_timestamp = 12;
+  double sum_open_interest = 13;
+  double sum_open_interest_value = 14;
+  double cmc_circulating_supply = 15;
+  int64 open_interest_hist_timestamp = 16;
+}
+
+message TopLongShortRatioSymbolInfo {
+  string symbol = 1;
+  int64 timestamp = 2;
+  TopLongShortRatioInfo ratio_info = 3;
+}
+
+message TopLongShortRatioPeriodMessage {
+  int64 period = 1;
+  int64 ts = 2;
+  int64 post_ts = 3;
+  string poster_id = 4;
+  repeated TopLongShortRatioSymbolInfo symbol_infos = 5;
+}
+
+message BorrowStatus {
+  string asset = 1;
+  double total_borrow = 2;
+  double total_repay = 3;
+  double total_borrow_in_usdt = 4;
+  double total_repay_in_usdt = 5;
+  double available_inventory = 6;
+}
+
+message BinanceMktStatus {
+  int64 last_calculation_time = 1;
+  repeated BorrowStatus borrow_statuses = 2;
+}

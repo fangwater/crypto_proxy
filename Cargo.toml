@@ -27,3 +27,7 @@ sonic-rs = "0.5.1"
 tokio-util = "0.7.15"
 reqwest = "0.12.19"
 prettytable = "0.10.0"
+prost = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"

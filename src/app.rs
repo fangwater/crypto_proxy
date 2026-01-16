@@ -174,12 +174,13 @@ impl CryptoProxyApp {
     fn start_rest_fetcher(&self) {
         info!("Starting REST Fetcher for binance-futures...");
 
-        let base_url = self.config.binance_rest.binance_futures_url.clone();
+        let spot_url = self.config.binance_rest.binance_url.clone();
+        let futures_url = self.config.binance_rest.binance_futures_url.clone();
         let sender = self.unified_tx.clone();
 
         // 启动独立的 tokio 任务，不受 restart 影响
         tokio::spawn(async move {
-            run_rest_fetcher_with_sender(base_url, sender).await;
+            run_rest_fetcher_with_sender(spot_url, futures_url, sender).await;
         });
 
         info!("REST Fetcher started (independent of restart cycle)");

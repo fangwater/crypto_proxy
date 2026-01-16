@@ -11,14 +11,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use uuid::Uuid;
 
-fn default_binance_base_url() -> String {
-    "https://data-api.binance.vision".to_string()
-}
-
-fn default_binance_futures_base_url() -> String {
-    "https://fapi.binance.com".to_string()
-}
-
 fn join_url(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let path = path.trim_start_matches('/');
@@ -27,12 +19,8 @@ fn join_url(base: &str, path: &str) -> String {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct BinanceRestCfg {
-    #[serde(default = "default_binance_base_url")]
     pub binance_url: String,
-    #[serde(
-        default = "default_binance_futures_base_url",
-        rename = "binance-futures_url"
-    )]
+    #[serde(rename = "binance-futures_url")]
     pub binance_futures_url: String,
 }
 
@@ -46,15 +34,6 @@ impl BinanceRestCfg {
     }
 }
 
-impl Default for BinanceRestCfg {
-    fn default() -> Self {
-        Self {
-            binance_url: default_binance_base_url(),
-            binance_futures_url: default_binance_futures_base_url(),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     is_primary: bool,
@@ -65,8 +44,7 @@ struct ConfigFile {
     binance: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
     binance_futures: ZmqProxyCfg,
-    #[serde(default)]
-    binance_rest: BinanceRestCfg,
+    binance_rest: Option<BinanceRestCfg>,
     okex: ZmqProxyCfg,
     #[serde(rename = "okex-swap")]
     okex_swap: ZmqProxyCfg,
@@ -180,7 +158,10 @@ impl Config {
             exchange, // 从命令行参数设置
             binance: config_file.binance,
             binance_futures: config_file.binance_futures,
-            binance_rest: config_file.binance_rest,
+            binance_rest: config_file.binance_rest.unwrap_or_else(|| BinanceRestCfg {
+                binance_url: String::new(),
+                binance_futures_url: String::new(),
+            }),
             okex: config_file.okex,
             okex_swap: config_file.okex_swap,
             bybit: config_file.bybit,

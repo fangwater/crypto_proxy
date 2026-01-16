@@ -8,13 +8,23 @@
 
 use bytes::Bytes;
 use log::{error, info, warn};
+use prost::Message;
 use reqwest::Client;
+use serde::de::{self, Deserializer, Visitor};
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tokio::time::{sleep_until, Instant};
 
-use crate::mkt_msg::{BarClose1mMsg, PremiumIndexKlineMsg, TopLongShortRatioMsg};
+use crate::mkt_msg::{
+    BarClose1mMsg,
+    BinanceMktStatusMsg,
+    PremiumIndexKlineMsg,
+    TopLongShortRatioMsg,
+};
+use crate::pb::message_old::{BinanceMktStatus, BorrowStatus};
 
 // ============================================================================
 // 常量定义
@@ -23,6 +33,8 @@ use crate::mkt_msg::{BarClose1mMsg, PremiumIndexKlineMsg, TopLongShortRatioMsg};
 const ONE_MINUTE_MILLIS: i64 = 60_000;
 const FIVE_MINUTE_MILLIS: i64 = 5 * ONE_MINUTE_MILLIS;
 const REST_MONITOR_TAG: &str = "[REST-MON]";
+const BAPI_BORROW_REPAY_PATH: &str = "bapi/margin/v1/public/margin/statistics/24h-borrow-and-repay";
+const BAPI_AVAILABLE_INVENTORY_PATH: &str = "bapi/margin/v1/public/margin/marketStats/available-inventory";
 
 /// 请求超时时间
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
@@ -114,6 +126,8 @@ pub struct OneMinuteResult {
     pub close_time: i64,
     pub premium_index: Vec<Result<PremiumIndexData, (String, FetchError)>>,
     pub open_interest: Vec<Result<OpenInterestData, (String, FetchError)>>,
+    pub bapi_borrow_repay: Result<String, FetchError>,
+    pub bapi_available_inventory: Result<String, FetchError>,
 }
 
 /// 5分钟汇总结果
@@ -124,6 +138,43 @@ pub struct FiveMinuteResult {
     pub top_position: Vec<Result<RatioMetricsData, (String, FetchError)>>,
     pub global_account: Vec<Result<RatioMetricsData, (String, FetchError)>>,
     pub open_interest_hist: Vec<Result<OpenInterestHistData, (String, FetchError)>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BapiBorrowRepayResponse {
+    data: BapiBorrowRepayData,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BapiBorrowRepayData {
+    calculation_time: i64,
+    coins: Vec<BapiBorrowCoin>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BapiBorrowCoin {
+    asset: String,
+    total_borrow: f64,
+    total_repay: f64,
+    total_borrow_in_usdt: f64,
+    total_repay_in_usdt: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BapiAvailableInventoryResponse {
+    data: BapiAvailableInventoryData,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BapiAvailableInventoryData {
+    assets: HashMap<String, f64>,
+    #[serde(deserialize_with = "deserialize_i64_from_string_or_number")]
+    update_time: i64,
 }
 
 // ============================================================================
@@ -143,6 +194,54 @@ struct SymbolInfo {
     quote_asset: String,
     #[serde(default)]
     contract_type: Option<String>,
+}
+
+fn join_url(base: &str, path: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    format!("{}/{}", base, path)
+}
+
+fn deserialize_i64_from_string_or_number<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct I64Visitor;
+
+    impl<'de> Visitor<'de> for I64Visitor {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("i64 or string")
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            i64::try_from(value).map_err(E::custom)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            value.parse::<i64>().map_err(E::custom)
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&value)
+        }
+    }
+
+    deserializer.deserialize_any(I64Visitor)
 }
 
 /// 从 Binance exchangeInfo 获取 USDT 永续合约 symbol 列表
@@ -260,6 +359,16 @@ async fn fetch_with_retry(
     }
 
     Err(last_error)
+}
+
+async fn fetch_bapi_endpoint(
+    client: &Client,
+    base_url: &str,
+    path: &str,
+    label: &str,
+) -> Result<String, FetchError> {
+    let url = join_url(base_url, path);
+    fetch_with_retry(client, &url, &[], label, "bapi").await
 }
 
 /// 获取 Premium Index Klines
@@ -531,14 +640,15 @@ async fn fetch_open_interest_hist(
 // ============================================================================
 
 pub struct BinanceRestFetcher {
-    base_url: String,
+    spot_base_url: String,
+    futures_base_url: String,
     client: Client,
     symbols: Vec<String>,
 }
 
 impl BinanceRestFetcher {
     /// 创建新的 REST Fetcher
-    pub async fn new(base_url: String) -> Result<Self, FetchError> {
+    pub async fn new(spot_base_url: String, futures_base_url: String) -> Result<Self, FetchError> {
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .pool_max_idle_per_host(100)
@@ -548,16 +658,17 @@ impl BinanceRestFetcher {
         // 获取 symbol 列表
         info!(
             "{REST_MONITOR_TAG} Fetching futures symbols from {}",
-            base_url
+            futures_base_url
         );
-        let symbols = fetch_futures_symbols(&base_url).await?;
+        let symbols = fetch_futures_symbols(&futures_base_url).await?;
         info!(
             "{REST_MONITOR_TAG} Fetched {} futures symbols",
             symbols.len()
         );
 
         Ok(Self {
-            base_url,
+            spot_base_url,
+            futures_base_url,
             client,
             symbols,
         })
@@ -570,7 +681,7 @@ impl BinanceRestFetcher {
 
     /// 刷新 symbol 列表
     pub async fn refresh_symbols(&mut self) -> Result<(), FetchError> {
-        let symbols = fetch_futures_symbols(&self.base_url).await?;
+        let symbols = fetch_futures_symbols(&self.futures_base_url).await?;
         info!(
             "{REST_MONITOR_TAG} Refreshed symbols: {} -> {}",
             self.symbols.len(),
@@ -591,7 +702,7 @@ impl BinanceRestFetcher {
             .iter()
             .map(|symbol| {
                 let client = self.client.clone();
-                let base_url = self.base_url.clone();
+                let base_url = self.futures_base_url.clone();
                 let symbol = symbol.clone();
                 async move {
                     let result = fetch_premium_index(&client, &base_url, &symbol, close_time).await;
@@ -605,7 +716,7 @@ impl BinanceRestFetcher {
             .iter()
             .map(|symbol| {
                 let client = self.client.clone();
-                let base_url = self.base_url.clone();
+                let base_url = self.futures_base_url.clone();
                 let symbol = symbol.clone();
                 async move {
                     let result = fetch_open_interest(&client, &base_url, &symbol).await;
@@ -614,9 +725,28 @@ impl BinanceRestFetcher {
             })
             .collect();
 
+        let bapi_client = self.client.clone();
+        let bapi_base_url = self.spot_base_url.clone();
+        let bapi_borrow_future = fetch_bapi_endpoint(
+            &bapi_client,
+            &bapi_base_url,
+            BAPI_BORROW_REPAY_PATH,
+            "BapiBorrowRepay",
+        );
+        let bapi_inventory_future = fetch_bapi_endpoint(
+            &bapi_client,
+            &bapi_base_url,
+            BAPI_AVAILABLE_INVENTORY_PATH,
+            "BapiAvailableInventory",
+        );
+
         // 等待所有请求完成
-        let premium_results = futures::future::join_all(premium_futures).await;
-        let oi_results = futures::future::join_all(oi_futures).await;
+        let (premium_results, oi_results, bapi_borrow_repay, bapi_available_inventory) = tokio::join!(
+            futures::future::join_all(premium_futures),
+            futures::future::join_all(oi_futures),
+            bapi_borrow_future,
+            bapi_inventory_future,
+        );
 
         for (symbol, result) in premium_results {
             match result {
@@ -636,6 +766,8 @@ impl BinanceRestFetcher {
             close_time,
             premium_index: premium_index_results,
             open_interest: open_interest_results,
+            bapi_borrow_repay,
+            bapi_available_inventory,
         }
     }
 
@@ -652,7 +784,7 @@ impl BinanceRestFetcher {
             .iter()
             .map(|symbol| {
                 let client = self.client.clone();
-                let base_url = self.base_url.clone();
+                let base_url = self.futures_base_url.clone();
                 let symbol = symbol.clone();
                 async move {
                     let result = fetch_ratio_metrics(
@@ -677,7 +809,7 @@ impl BinanceRestFetcher {
             .iter()
             .map(|symbol| {
                 let client = self.client.clone();
-                let base_url = self.base_url.clone();
+                let base_url = self.futures_base_url.clone();
                 let symbol = symbol.clone();
                 async move {
                     let result = fetch_ratio_metrics(
@@ -702,7 +834,7 @@ impl BinanceRestFetcher {
             .iter()
             .map(|symbol| {
                 let client = self.client.clone();
-                let base_url = self.base_url.clone();
+                let base_url = self.futures_base_url.clone();
                 let symbol = symbol.clone();
                 async move {
                     let result = fetch_ratio_metrics(
@@ -727,7 +859,7 @@ impl BinanceRestFetcher {
             .iter()
             .map(|symbol| {
                 let client = self.client.clone();
-                let base_url = self.base_url.clone();
+                let base_url = self.futures_base_url.clone();
                 let symbol = symbol.clone();
                 async move {
                     let result =
@@ -818,9 +950,18 @@ fn print_one_minute_summary(result: &OneMinuteResult) {
     let oi_success = result.open_interest.iter().filter(|r| r.is_ok()).count();
     let oi_fail = result.open_interest.len() - oi_success;
 
+    let bapi_borrow_ok = result.bapi_borrow_repay.is_ok();
+    let bapi_inventory_ok = result.bapi_available_inventory.is_ok();
+
     info!(
-        "{REST_MONITOR_TAG} [1min Summary] close_time={} | PremiumIndex: {}/{} success | OpenInterest: {}/{} success",
-        result.close_time, pi_success, result.premium_index.len(), oi_success, result.open_interest.len()
+        "{REST_MONITOR_TAG} [1min Summary] close_time={} | PremiumIndex: {}/{} success | OpenInterest: {}/{} success | BAPI BorrowRepay: {} | BAPI Inventory: {}",
+        result.close_time,
+        pi_success,
+        result.premium_index.len(),
+        oi_success,
+        result.open_interest.len(),
+        if bapi_borrow_ok { "ok" } else { "err" },
+        if bapi_inventory_ok { "ok" } else { "err" }
     );
 
     if pi_fail > 0 || oi_fail > 0 {
@@ -852,6 +993,13 @@ fn print_one_minute_summary(result: &OneMinuteResult) {
             }
         }
     }
+
+    if let Err(e) = &result.bapi_borrow_repay {
+        warn!("{REST_MONITOR_TAG}   BAPI BorrowRepay failed: {}", e.detail());
+    }
+    if let Err(e) = &result.bapi_available_inventory {
+        warn!("{REST_MONITOR_TAG}   BAPI Inventory failed: {}", e.detail());
+    }
 }
 
 /// 打印5分钟请求汇总
@@ -873,18 +1021,83 @@ fn print_five_minute_summary(result: &FiveMinuteResult) {
     );
 }
 
+struct BinanceMktStatusPayload {
+    calculation_time: i64,
+    update_time: i64,
+    payload: Bytes,
+}
+
+fn build_binance_mkt_status_payload(
+    borrow_body: &str,
+    inventory_body: &str,
+) -> Result<BinanceMktStatusPayload, FetchError> {
+    let borrow_resp: BapiBorrowRepayResponse =
+        serde_json::from_str(borrow_body).map_err(|e| FetchError::Json(e.to_string()))?;
+    let inventory_resp: BapiAvailableInventoryResponse =
+        serde_json::from_str(inventory_body).map_err(|e| FetchError::Json(e.to_string()))?;
+
+    let mut status_map: HashMap<String, BorrowStatus> = HashMap::new();
+    for coin in borrow_resp.data.coins {
+        status_map.insert(
+            coin.asset.clone(),
+            BorrowStatus {
+                asset: coin.asset,
+                total_borrow: coin.total_borrow,
+                total_repay: coin.total_repay,
+                total_borrow_in_usdt: coin.total_borrow_in_usdt,
+                total_repay_in_usdt: coin.total_repay_in_usdt,
+                available_inventory: 0.0,
+            },
+        );
+    }
+
+    for (asset, available_inventory) in inventory_resp.data.assets {
+        status_map
+            .entry(asset.clone())
+            .and_modify(|status| status.available_inventory = available_inventory)
+            .or_insert(BorrowStatus {
+                asset,
+                total_borrow: 0.0,
+                total_repay: 0.0,
+                total_borrow_in_usdt: 0.0,
+                total_repay_in_usdt: 0.0,
+                available_inventory,
+            });
+    }
+
+    let mut borrow_statuses: Vec<BorrowStatus> = status_map.into_values().collect();
+    borrow_statuses.sort_by(|a, b| a.asset.cmp(&b.asset));
+
+    let status = BinanceMktStatus {
+        last_calculation_time: borrow_resp.data.calculation_time,
+        borrow_statuses,
+    };
+
+    let payload = status.encode_to_vec();
+    Ok(BinanceMktStatusPayload {
+        calculation_time: borrow_resp.data.calculation_time,
+        update_time: inventory_resp.data.update_time,
+        payload: Bytes::from(payload),
+    })
+}
+
 // ============================================================================
 // 带消息推送的运行函数
 // ============================================================================
 
 /// 运行 REST Fetcher 主循环（带消息推送）
-pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::Sender<Bytes>) {
+pub async fn run_rest_fetcher_with_sender(
+    spot_base_url: String,
+    futures_base_url: String,
+    sender: broadcast::Sender<Bytes>,
+) {
     info!(
-        "{REST_MONITOR_TAG} Starting BinanceRestFetcher with base_url: {} (with message sender)",
-        base_url
+        "{REST_MONITOR_TAG} Starting BinanceRestFetcher | spot_base_url={} | futures_base_url={} (with message sender)",
+        spot_base_url, futures_base_url
     );
 
-    let mut fetcher = match BinanceRestFetcher::new(base_url).await {
+    let mut fetcher = match BinanceRestFetcher::new(spot_base_url, futures_base_url).await {
+
         Ok(f) => f,
         Err(e) => {
             error!(
@@ -956,6 +1169,7 @@ pub async fn run_rest_fetcher_with_sender(base_url: String, sender: broadcast::S
 
         // 发送1分钟消息
         send_one_minute_messages(&one_min_result, &sender);
+        send_binance_mkt_status_message(&one_min_result, &sender);
         print_one_minute_summary(&one_min_result);
 
         // 发送1分钟封bar消息
@@ -1041,6 +1255,42 @@ fn send_one_minute_messages(result: &OneMinuteResult, sender: &broadcast::Sender
         "{REST_MONITOR_TAG} [1min Broadcast] close_time={} | sent {} PremiumIndexKlineMsg",
         close_time, sent_count
     );
+}
+
+fn send_binance_mkt_status_message(result: &OneMinuteResult, sender: &broadcast::Sender<Bytes>) {
+    let (borrow_body, inventory_body) = match (
+        &result.bapi_borrow_repay,
+        &result.bapi_available_inventory,
+    ) {
+        (Ok(borrow_body), Ok(inventory_body)) => (borrow_body, inventory_body),
+        (Err(e), _) => {
+            warn!("{REST_MONITOR_TAG} BAPI BorrowRepay not sent: {}", e.detail());
+            return;
+        }
+        (_, Err(e)) => {
+            warn!("{REST_MONITOR_TAG} BAPI Inventory not sent: {}", e.detail());
+            return;
+        }
+    };
+
+    match build_binance_mkt_status_payload(borrow_body, inventory_body) {
+        Ok(payload) => {
+            let msg = BinanceMktStatusMsg::create(
+                payload.calculation_time,
+                payload.update_time,
+                payload.payload,
+            );
+            if let Err(e) = sender.send(msg.to_bytes()) {
+                error!("{REST_MONITOR_TAG} Failed to send BinanceMktStatus msg: {}", e);
+            }
+        }
+        Err(e) => {
+            warn!(
+                "{REST_MONITOR_TAG} Failed to build BinanceMktStatus payload: {}",
+                e.detail()
+            );
+        }
+    }
 }
 
 /// 发送5分钟消息（TopLongShortRatioMsg）
