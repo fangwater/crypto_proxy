@@ -1,19 +1,88 @@
 #!/bin/bash
 
-# 候选的exchange list 
+# 候选的exchange list
 exchange_list=(
     "binance"
     "okex"
     "bybit"
 )
 
-exchange=$1
+side=""
+exchange=""
+
+usage() {
+    cat <<USAGE
+用法: $(basename "$0") --side primary|secondary <exchange>
+
+参数:
+  --side        选择网关分区: primary 或 secondary
+
+示例:
+  $(basename "$0") --side primary binance
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --side)
+            shift
+            if [ $# -eq 0 ]; then
+                echo "缺少 --side 参数值"
+                usage
+                exit 1
+            fi
+            side="$1"
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        -* )
+            echo "未知参数: $1"
+            usage
+            exit 1
+            ;;
+        *)
+            if [ -z "$exchange" ]; then
+                exchange="$1"
+            else
+                echo "多余参数: $1"
+                usage
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
 
 if [ -z "$exchange" ]; then
     echo "请提供一个交易所名称作为参数"
     echo "支持的交易所: ${exchange_list[*]}"
+    usage
     exit 1
 fi
+
+if [ -z "$side" ]; then
+    echo "请提供 --side 参数"
+    usage
+    exit 1
+fi
+
+side="${side,,}"
+case "$side" in
+    primary)
+        BINANCE_GATEWAY_HOST="192.168.1.198"
+        ;;
+    secondary)
+        BINANCE_GATEWAY_HOST="192.168.1.55"
+        ;;
+    *)
+        echo "无效的 --side 参数: $side"
+        usage
+        exit 1
+        ;;
+esac
 
 if ! echo "${exchange_list[@]}" | grep -wq "$exchange"; then
     echo "无效的交易所名称: $exchange"
@@ -45,17 +114,17 @@ get_exchange_configs() {
 start_single_proxy() {
     local config=$1
     local pm2_name="crypto_proxy_${config}"
-    
+
     echo "启动 ${config} 代理..."
-    
+
     # 停止现有进程
     pm2 delete "$pm2_name" 2>/dev/null
-    
+
     # 启动新进程
     local rest_args=()
     if [[ "$config" == "binance" || "$config" == "binance-futures" ]]; then
-        rest_args+=(--binance-url "http://192.168.1.198:19080")
-        rest_args+=(--binance-futures-url "http://192.168.1.198:19081")
+        rest_args+=(--binance-url "http://${BINANCE_GATEWAY_HOST}:19080")
+        rest_args+=(--binance-futures-url "http://${BINANCE_GATEWAY_HOST}:19081")
     fi
 
     pm2 start ./crypto_proxy \
@@ -63,7 +132,7 @@ start_single_proxy() {
         -- \
         --exchange "$config" \
         "${rest_args[@]}"
-        
+
     if [ $? -eq 0 ]; then
         echo "✓ ${config} 代理启动成功"
     else
@@ -76,16 +145,17 @@ start_single_proxy() {
 start_exchange_proxies() {
     local exchange=$1
     local configs=$(get_exchange_configs "$exchange")
-    
+
     echo "开始启动 ${exchange} 交易所的代理服务..."
     echo "将启动以下配置: $configs"
+    echo "使用网关: ${BINANCE_GATEWAY_HOST} (side: ${side})"
     echo ""
-    
+
     for config in $configs; do
         start_single_proxy "$config"
         sleep 2
     done
-    
+
     echo ""
     echo "${exchange} 交易所所有代理启动完成！"
     echo ""
@@ -93,7 +163,7 @@ start_exchange_proxies() {
     for config in $configs; do
         echo "  pm2 logs crypto_proxy_${config}"
     done
-    
+
     echo ""
     echo "查看状态: pm2 status"
 }
