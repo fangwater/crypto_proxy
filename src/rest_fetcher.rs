@@ -177,6 +177,12 @@ struct BapiAvailableInventoryData {
     update_time: i64,
 }
 
+#[derive(Debug, Default)]
+struct BapiMktStatusCache {
+    borrow: Option<BapiBorrowRepayResponse>,
+    inventory: Option<BapiAvailableInventoryResponse>,
+}
+
 // ============================================================================
 // Symbol 获取
 // ============================================================================
@@ -1027,21 +1033,58 @@ struct BinanceMktStatusPayload {
     payload: Bytes,
 }
 
-fn build_binance_mkt_status_payload(
-    borrow_body: &str,
-    inventory_body: &str,
-) -> Result<BinanceMktStatusPayload, FetchError> {
-    let borrow_resp: BapiBorrowRepayResponse =
-        serde_json::from_str(borrow_body).map_err(|e| FetchError::Json(e.to_string()))?;
-    let inventory_resp: BapiAvailableInventoryResponse =
-        serde_json::from_str(inventory_body).map_err(|e| FetchError::Json(e.to_string()))?;
+fn update_bapi_borrow_cache(
+    cache: &mut BapiMktStatusCache,
+    body: &str,
+) -> Result<(), FetchError> {
+    let parsed: BapiBorrowRepayResponse =
+        serde_json::from_str(body).map_err(|e| FetchError::Json(e.to_string()))?;
+    let new_time = parsed.data.calculation_time;
+    if let Some(old) = cache.borrow.as_ref() {
+        let old_time = old.data.calculation_time;
+        if new_time < old_time {
+            warn!(
+                "{REST_MONITOR_TAG} BAPI BorrowRepay time rollback: new={} old={}",
+                new_time, old_time
+            );
+            return Ok(());
+        }
+    }
+    cache.borrow = Some(parsed);
+    Ok(())
+}
 
+fn update_bapi_inventory_cache(
+    cache: &mut BapiMktStatusCache,
+    body: &str,
+) -> Result<(), FetchError> {
+    let parsed: BapiAvailableInventoryResponse =
+        serde_json::from_str(body).map_err(|e| FetchError::Json(e.to_string()))?;
+    let new_time = parsed.data.update_time;
+    if let Some(old) = cache.inventory.as_ref() {
+        let old_time = old.data.update_time;
+        if new_time < old_time {
+            warn!(
+                "{REST_MONITOR_TAG} BAPI Inventory time rollback: new={} old={}",
+                new_time, old_time
+            );
+            return Ok(());
+        }
+    }
+    cache.inventory = Some(parsed);
+    Ok(())
+}
+
+fn build_binance_mkt_status_payload(
+    borrow_resp: &BapiBorrowRepayResponse,
+    inventory_resp: &BapiAvailableInventoryResponse,
+) -> Result<BinanceMktStatusPayload, FetchError> {
     let mut status_map: HashMap<String, BorrowStatus> = HashMap::new();
-    for coin in borrow_resp.data.coins {
+    for coin in &borrow_resp.data.coins {
         status_map.insert(
             coin.asset.clone(),
             BorrowStatus {
-                asset: coin.asset,
+                asset: coin.asset.clone(),
                 total_borrow: coin.total_borrow,
                 total_repay: coin.total_repay,
                 total_borrow_in_usdt: coin.total_borrow_in_usdt,
@@ -1051,32 +1094,36 @@ fn build_binance_mkt_status_payload(
         );
     }
 
-    for (asset, available_inventory) in inventory_resp.data.assets {
+    for (asset, available_inventory) in &inventory_resp.data.assets {
         status_map
             .entry(asset.clone())
-            .and_modify(|status| status.available_inventory = available_inventory)
+            .and_modify(|status| status.available_inventory = *available_inventory)
             .or_insert(BorrowStatus {
-                asset,
+                asset: asset.clone(),
                 total_borrow: 0.0,
                 total_repay: 0.0,
                 total_borrow_in_usdt: 0.0,
                 total_repay_in_usdt: 0.0,
-                available_inventory,
+                available_inventory: *available_inventory,
             });
     }
 
     let mut borrow_statuses: Vec<BorrowStatus> = status_map.into_values().collect();
     borrow_statuses.sort_by(|a, b| a.asset.cmp(&b.asset));
 
+    let calculation_time = borrow_resp.data.calculation_time;
+    let update_time = inventory_resp.data.update_time;
+    let last_time = calculation_time.max(update_time);
+
     let status = BinanceMktStatus {
-        last_calculation_time: borrow_resp.data.calculation_time,
+        last_calculation_time: last_time,
         borrow_statuses,
     };
 
     let payload = status.encode_to_vec();
     Ok(BinanceMktStatusPayload {
-        calculation_time: borrow_resp.data.calculation_time,
-        update_time: inventory_resp.data.update_time,
+        calculation_time,
+        update_time,
         payload: Bytes::from(payload),
     })
 }
@@ -1114,6 +1161,7 @@ pub async fn run_rest_fetcher_with_sender(
     );
 
     let mut pending_five_min: Option<(i64, Instant)> = None;
+    let mut bapi_cache = BapiMktStatusCache::default();
 
     loop {
         // 等待下一个分钟边界
@@ -1169,7 +1217,7 @@ pub async fn run_rest_fetcher_with_sender(
 
         // 发送1分钟消息
         send_one_minute_messages(&one_min_result, &sender);
-        send_binance_mkt_status_message(&one_min_result, &sender);
+        send_binance_mkt_status_message(&one_min_result, &mut bapi_cache, &sender);
         print_one_minute_summary(&one_min_result);
 
         // 发送1分钟封bar消息
@@ -1257,23 +1305,37 @@ fn send_one_minute_messages(result: &OneMinuteResult, sender: &broadcast::Sender
     );
 }
 
-fn send_binance_mkt_status_message(result: &OneMinuteResult, sender: &broadcast::Sender<Bytes>) {
-    let (borrow_body, inventory_body) = match (
-        &result.bapi_borrow_repay,
-        &result.bapi_available_inventory,
-    ) {
-        (Ok(borrow_body), Ok(inventory_body)) => (borrow_body, inventory_body),
-        (Err(e), _) => {
-            warn!("{REST_MONITOR_TAG} BAPI BorrowRepay not sent: {}", e.detail());
-            return;
+fn send_binance_mkt_status_message(
+    result: &OneMinuteResult,
+    cache: &mut BapiMktStatusCache,
+    sender: &broadcast::Sender<Bytes>,
+) {
+    if let Ok(body) = &result.bapi_borrow_repay {
+        if let Err(e) = update_bapi_borrow_cache(cache, body) {
+            warn!(
+                "{REST_MONITOR_TAG} Failed to parse BAPI BorrowRepay: {}",
+                e.detail()
+            );
         }
-        (_, Err(e)) => {
-            warn!("{REST_MONITOR_TAG} BAPI Inventory not sent: {}", e.detail());
+    }
+    if let Ok(body) = &result.bapi_available_inventory {
+        if let Err(e) = update_bapi_inventory_cache(cache, body) {
+            warn!(
+                "{REST_MONITOR_TAG} Failed to parse BAPI Inventory: {}",
+                e.detail()
+            );
+        }
+    }
+
+    let (borrow_resp, inventory_resp) = match (&cache.borrow, &cache.inventory) {
+        (Some(borrow_resp), Some(inventory_resp)) => (borrow_resp, inventory_resp),
+        _ => {
+            info!("{REST_MONITOR_TAG} BAPI cache not ready, skip BinanceMktStatus");
             return;
         }
     };
 
-    match build_binance_mkt_status_payload(borrow_body, inventory_body) {
+    match build_binance_mkt_status_payload(borrow_resp, inventory_resp) {
         Ok(payload) => {
             let msg = BinanceMktStatusMsg::create(
                 payload.calculation_time,
