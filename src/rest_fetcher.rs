@@ -9,11 +9,16 @@
 use bytes::Bytes;
 use log::{error, info, warn};
 use prost::Message;
-use reqwest::Client;
+use flate2::read::GzDecoder;
+use reqwest::{
+    header::{CONTENT_ENCODING, CONTENT_TYPE},
+    Client,
+};
 use serde::de::{self, Deserializer, Visitor};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tokio::time::{sleep_until, Instant};
@@ -37,7 +42,7 @@ const BAPI_BORROW_REPAY_PATH: &str = "bapi/margin/v1/public/margin/statistics/24
 const BAPI_AVAILABLE_INVENTORY_PATH: &str = "bapi/margin/v1/public/margin/marketStats/available-inventory";
 
 /// 请求超时时间
-const REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
+const REQUEST_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// 最大重试次数
 const MAX_RETRIES: u32 = 2;
@@ -47,6 +52,8 @@ const REQUEST_DELAY_MS: u64 = 1000;
 
 /// 5分钟请求额外延迟
 const FIVE_MIN_REQUEST_DELAY_SECS: u64 = 180;
+const PERIOD_INIT_TP_MS: i64 = 1_704_067_200_000;
+const PERIOD_BASIC_MS: i64 = 3000;
 
 // ============================================================================
 // 错误类型
@@ -208,6 +215,49 @@ fn join_url(base: &str, path: &str) -> String {
     format!("{}/{}", base, path)
 }
 
+fn body_preview(body: &str) -> String {
+    const LIMIT: usize = 200;
+    let bytes = body.as_bytes();
+    let end = bytes.len().min(LIMIT);
+    let mut preview = String::from_utf8_lossy(&bytes[..end]).to_string();
+    if bytes.len() > end {
+        preview.push_str("...");
+    }
+    preview = preview.replace('\n', "\\n").replace('\r', "\\r");
+    preview
+}
+
+fn normalize_timestamp_millis(ts: i64) -> i64 {
+    if ts > 0 && ts < 1_000_000_000_000 {
+        ts * 1000
+    } else {
+        ts
+    }
+}
+
+fn calc_period(tp_ms: i64) -> i64 {
+    if tp_ms <= PERIOD_INIT_TP_MS {
+        0
+    } else {
+        (tp_ms - PERIOD_INIT_TP_MS) / PERIOD_BASIC_MS
+    }
+}
+
+fn decode_response_body(label: &str, body: &[u8]) -> Result<String, FetchError> {
+    let is_bapi = label.starts_with("Bapi");
+    let is_gzip = body.len() >= 2 && body[0] == 0x1f && body[1] == 0x8b;
+    if is_bapi && is_gzip {
+        let mut decoder = GzDecoder::new(body);
+        let mut decoded = String::new();
+        decoder
+            .read_to_string(&mut decoded)
+            .map_err(|e| FetchError::Request(format!("gzip decode error: {}", e)))?;
+        return Ok(decoded);
+    }
+
+    Ok(String::from_utf8_lossy(body).to_string())
+}
+
 fn deserialize_i64_from_string_or_number<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
     D: Deserializer<'de>,
@@ -321,28 +371,82 @@ async fn fetch_with_retry(
         match result {
             Ok(response) => {
                 let status = response.status();
-                if !status.is_success() {
-                    last_error = FetchError::Http(status.as_u16());
-                    if attempt + 1 < MAX_RETRIES {
+                let content_type = response
+                    .headers()
+                    .get(CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-")
+                    .to_string();
+                let content_encoding = response
+                    .headers()
+                    .get(CONTENT_ENCODING)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-")
+                    .to_string();
+                let raw_body = match response.bytes().await {
+                    Ok(body) => body,
+                    Err(e) => {
+                        last_error = FetchError::Request(e.to_string());
                         warn!(
-                            "{REST_MONITOR_TAG} [{}] {} HTTP {} (attempt {}/{})",
+                            "{REST_MONITOR_TAG} [{}] {} read body error (attempt {}/{}): {}",
                             label,
                             symbol,
-                            status,
                             attempt + 1,
-                            MAX_RETRIES
+                            MAX_RETRIES,
+                            e
                         );
+                        continue;
                     }
+                };
+                let body = match decode_response_body(label, &raw_body) {
+                    Ok(body) => body,
+                    Err(e) => {
+                        let detail = e.detail();
+                        last_error = e;
+                        warn!(
+                            "{REST_MONITOR_TAG} [{}] {} decode body error (attempt {}/{}): {}",
+                            label,
+                            symbol,
+                            attempt + 1,
+                            MAX_RETRIES,
+                            detail
+                        );
+                        continue;
+                    }
+                };
+
+                if !status.is_success() {
+                    last_error = FetchError::Http(status.as_u16());
+                    warn!(
+                        "{REST_MONITOR_TAG} [{}] {} HTTP {} (attempt {}/{}) content-type={} content-encoding={} body_len={} body=\"{}\"",
+                        label,
+                        symbol,
+                        status,
+                        attempt + 1,
+                        MAX_RETRIES,
+                        content_type,
+                        content_encoding,
+                        body.len(),
+                        body_preview(&body)
+                    );
                     continue;
                 }
 
-                match response.text().await {
-                    Ok(body) => return Ok(body),
-                    Err(e) => {
-                        last_error = FetchError::Request(e.to_string());
-                        continue;
-                    }
+                if body.trim().is_empty() {
+                    last_error = FetchError::EmptyResponse;
+                    warn!(
+                        "{REST_MONITOR_TAG} [{}] {} empty body (attempt {}/{}) content-type={} content-encoding={}",
+                        label,
+                        symbol,
+                        attempt + 1,
+                        MAX_RETRIES,
+                        content_type,
+                        content_encoding
+                    );
+                    continue;
                 }
+
+                return Ok(body);
             }
             Err(e) => {
                 if e.is_timeout() {
@@ -1037,8 +1141,16 @@ fn update_bapi_borrow_cache(
     cache: &mut BapiMktStatusCache,
     body: &str,
 ) -> Result<(), FetchError> {
-    let parsed: BapiBorrowRepayResponse =
-        serde_json::from_str(body).map_err(|e| FetchError::Json(e.to_string()))?;
+    let mut parsed: BapiBorrowRepayResponse = serde_json::from_str(body).map_err(|e| {
+        warn!(
+            "{REST_MONITOR_TAG} BAPI BorrowRepay JSON parse failed: {} | body_len={} | body=\"{}\"",
+            e,
+            body.len(),
+            body_preview(body)
+        );
+        FetchError::Json(e.to_string())
+    })?;
+    parsed.data.calculation_time = normalize_timestamp_millis(parsed.data.calculation_time);
     let new_time = parsed.data.calculation_time;
     if let Some(old) = cache.borrow.as_ref() {
         let old_time = old.data.calculation_time;
@@ -1058,8 +1170,16 @@ fn update_bapi_inventory_cache(
     cache: &mut BapiMktStatusCache,
     body: &str,
 ) -> Result<(), FetchError> {
-    let parsed: BapiAvailableInventoryResponse =
-        serde_json::from_str(body).map_err(|e| FetchError::Json(e.to_string()))?;
+    let mut parsed: BapiAvailableInventoryResponse = serde_json::from_str(body).map_err(|e| {
+        warn!(
+            "{REST_MONITOR_TAG} BAPI Inventory JSON parse failed: {} | body_len={} | body=\"{}\"",
+            e,
+            body.len(),
+            body_preview(body)
+        );
+        FetchError::Json(e.to_string())
+    })?;
+    parsed.data.update_time = normalize_timestamp_millis(parsed.data.update_time);
     let new_time = parsed.data.update_time;
     if let Some(old) = cache.inventory.as_ref() {
         let old_time = old.data.update_time;
@@ -1078,6 +1198,7 @@ fn update_bapi_inventory_cache(
 fn build_binance_mkt_status_payload(
     borrow_resp: &BapiBorrowRepayResponse,
     inventory_resp: &BapiAvailableInventoryResponse,
+    period: i64,
 ) -> Result<BinanceMktStatusPayload, FetchError> {
     let mut status_map: HashMap<String, BorrowStatus> = HashMap::new();
     for coin in &borrow_resp.data.coins {
@@ -1118,6 +1239,8 @@ fn build_binance_mkt_status_payload(
     let status = BinanceMktStatus {
         last_calculation_time: last_time,
         borrow_statuses,
+        period,
+        last_update_time: update_time,
     };
 
     let payload = status.encode_to_vec();
@@ -1335,7 +1458,8 @@ fn send_binance_mkt_status_message(
         }
     };
 
-    match build_binance_mkt_status_payload(borrow_resp, inventory_resp) {
+    let period = calc_period(result.close_time);
+    match build_binance_mkt_status_payload(borrow_resp, inventory_resp, period) {
         Ok(payload) => {
             let msg = BinanceMktStatusMsg::create(
                 payload.calculation_time,

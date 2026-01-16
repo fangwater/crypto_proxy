@@ -191,4 +191,6 @@ message BorrowStatus {
 message BinanceMktStatus {
   int64 last_calculation_time = 1;
   repeated BorrowStatus borrow_statuses = 2;
+  int64 period = 3;
+  int64 last_update_time = 4;
 }
