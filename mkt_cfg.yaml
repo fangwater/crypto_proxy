@@ -17,8 +17,8 @@ binance-futures:
 
 binance-spot:
   ipc_path: "/tmp/zmq_mkt_binance-spot_feeds.ipc"
-  primary_addr: "192.168.1.51:15561"
-  secondary_addr: "192.168.1.52:15561"
+  primary_addr: "192.168.1.53:15561"
+  secondary_addr: "192.168.1.54:15561"
   hwm: 5000
 
 
