@@ -9,7 +9,15 @@ use tokio::{
     net::TcpStream,
     time::{self, Duration, Instant},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{
+        client::IntoClientRequest,
+        http::{HeaderName, HeaderValue},
+        Message,
+    },
+    MaybeTlsStream, WebSocketStream,
+};
 use url::Url;
 
 pub struct WsConnectionResult {
@@ -125,6 +133,74 @@ impl WsConnector {
             Self::MAX_RETRIES
         ))
     }
+
+    pub async fn connect_with_headers(
+        url: &str,
+        sub_msg: &serde_json::Value,
+        connection_name: &str,
+        headers: &[(String, String)],
+    ) -> anyhow::Result<WsConnectionResult> {
+        let url = Url::parse(url).with_context(|| "Invalid URL")?;
+        for retry in 0..Self::MAX_RETRIES {
+            let mut request = url.clone().into_client_request()?;
+            apply_headers(request.headers_mut(), headers)?;
+            match connect_async(request).await {
+                Ok((mut ws_stream, _)) => {
+                    match ws_stream.send(Message::Text(sub_msg.to_string())).await {
+                        Ok(_) => {
+                            info!(
+                                "[{}] Successful send subscription message",
+                                connection_name
+                            );
+                            return Ok(WsConnectionResult {
+                                ws_stream: Arc::new(Mutex::new(ws_stream)),
+                                connected_at: Instant::now(),
+                            });
+                        }
+                        Err(e) => {
+                            error!(
+                                "[{}] Failed to send subscription message: {}",
+                                connection_name, e
+                            );
+                            return Err(e.into());
+                        }
+                    }
+                }
+                Err(e) => {
+                    if Self::is_dns_error(&e) {
+                        error!(
+                            "[{}] DNS error, retrying... ({}/{})",
+                            connection_name,
+                            retry + 1,
+                            Self::MAX_RETRIES
+                        );
+                        time::sleep(Self::RETRY_DELAY).await;
+                    } else {
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!(
+            "[{}] Failed to connect to WebSocket after {} retries",
+            connection_name,
+            Self::MAX_RETRIES
+        ))
+    }
+}
+
+fn apply_headers(
+    target: &mut tokio_tungstenite::tungstenite::http::HeaderMap,
+    headers: &[(String, String)],
+) -> anyhow::Result<()> {
+    for (key, value) in headers {
+        let name = HeaderName::from_bytes(key.as_bytes())
+            .with_context(|| format!("Invalid header name: {}", key))?;
+        let val = HeaderValue::from_str(value)
+            .with_context(|| format!("Invalid header value for {}", key))?;
+        target.insert(name, val);
+    }
+    Ok(())
 }
 
 //两个trait，start stop是通用trait，run_connection是交易所的具体实现
@@ -157,7 +233,9 @@ pub fn construct_connection(
         MktConnection::new(connection_name, url, subscribe_msg, tx, global_shutdown_rx);
 
     match exchange.as_str() {
-        "binance-futures" | "binance" => Ok(Box::new(BinanceConnection::new(base_connection))),
+        "binance-futures" | "binance" | "binance-spot" => {
+            Ok(Box::new(BinanceConnection::new(base_connection)))
+        }
         "okex-swap" | "okex" => Ok(Box::new(OkexConnection::new(base_connection))),
         "bybit" | "bybit-spot" => Ok(Box::new(BybitConnection::new(base_connection))),
         _ => Err(anyhow::anyhow!("Unsupported exchange: {}", exchange)),

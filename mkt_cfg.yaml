@@ -15,6 +15,12 @@ binance-futures:
   secondary_addr: "192.168.1.52:15556"
   hwm: 5000
 
+binance-spot:
+  ipc_path: "/tmp/zmq_mkt_binance-spot_feeds.ipc"
+  primary_addr: "192.168.1.51:15561"
+  secondary_addr: "192.168.1.52:15561"
+  hwm: 5000
+
 
 okex:
   ipc_path: "/tmp/zmq_mkt_okex_feeds.ipc"

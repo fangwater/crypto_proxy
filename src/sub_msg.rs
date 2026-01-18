@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 fn construct_subscribe_message(exchange: &str, symbols: &[String], channel: &str) -> Value {
     match exchange {
-        "binance-futures" | "binance" => {
+        "binance-futures" | "binance" | "binance-spot" => {
             let params: Vec<String> = symbols
                 .iter()
                 .map(|symbol| format!("{}@{}", symbol.to_lowercase(), channel))
@@ -256,6 +256,7 @@ impl SubscribeMsgs {
         match exchange {
             "binance-futures" => "depth@0ms".to_string(),
             "binance" => "depth@100ms".to_string(),
+            "binance-spot" => "depth".to_string(),
             "okex-swap" => "books".to_string(),
             "okex" => "books".to_string(),
             "bybit" => "orderbook.500".to_string(),
@@ -265,7 +266,7 @@ impl SubscribeMsgs {
     }
     fn get_kline_channel(exchange: &str) -> String {
         match exchange {
-            "binance-futures" | "binance" => "kline_1m".to_string(),
+            "binance-futures" | "binance" | "binance-spot" => "kline_1m".to_string(),
             "okex-swap" | "okex" => "candle1m".to_string(),
             "bybit" | "bybit-spot" => "kline.1".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange),
@@ -274,7 +275,7 @@ impl SubscribeMsgs {
 
     fn get_trade_channel(exchange: &str) -> String {
         match exchange {
-            "binance-futures" | "binance" => "trade".to_string(),
+            "binance-futures" | "binance" | "binance-spot" => "trade".to_string(),
             "okex-swap" | "okex" => "trades".to_string(),
             "bybit" | "bybit-spot" => "publicTrade".to_string(),
             _ => panic!("Unsupported exchange: {}", exchange),
@@ -289,6 +290,8 @@ impl SubscribeMsgs {
             "binance-futures" => "wss://fstream.binance.com/ws",
             //币安u本位期货合约对应的现货
             "binance" => "wss://data-stream.binance.vision/ws",
+            //币安现货（SBE 仅用于 inc/trade，其他仍走 JSON）
+            "binance-spot" => "wss://data-stream.binance.vision/ws",
             //OKEXu本位期货合约
             "okex-swap" => "wss://ws.okx.com:8443/ws/v5/public",
             //OKEXu本位期货合约对应的现货
@@ -307,6 +310,8 @@ impl SubscribeMsgs {
             "binance-futures" => "wss://fstream.binance.com/ws",
             //币安u本位期货合约对应的现货
             "binance" => "wss://data-stream.binance.vision/ws",
+            //币安现货 kline 仍使用 JSON
+            "binance-spot" => "wss://data-stream.binance.vision/ws",
             //OKEXu本位期货合约
             "okex-swap" => "wss://ws.okx.com:8443/ws/v5/business",
             //OKEXu本位期货合约对应的现货
@@ -328,7 +333,7 @@ impl SubscribeMsgs {
                     "id": 1,
                 })
             }
-            "binance" => {
+            "binance" | "binance-spot" => {
                 serde_json::json!({
                     "method": "SUBSCRIBE",
                     "params": ["btcusdt@depth@100ms"],

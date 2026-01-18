@@ -42,6 +42,8 @@ struct ConfigFile {
     symbol_socket: String,
     symbol_snapshot_dir: Option<String>,
     binance: ZmqProxyCfg,
+    #[serde(rename = "binance-spot")]
+    binance_spot: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
     binance_futures: ZmqProxyCfg,
     binance_rest: Option<BinanceRestCfg>,
@@ -123,6 +125,8 @@ pub struct Config {
     pub symbol_snapshot_dir: String,
     pub exchange: Exchange, // 在运行时设置，不从配置文件读取
     pub binance: ZmqProxyCfg,
+    #[serde(rename = "binance-spot")]
+    pub binance_spot: ZmqProxyCfg,
     #[serde(rename = "binance-futures")]
     pub binance_futures: ZmqProxyCfg,
     pub binance_rest: BinanceRestCfg,
@@ -149,7 +153,7 @@ impl Config {
         Self::ensure_snapshot_dir(Path::new(&symbol_snapshot_dir)).await?;
 
         // 构造 Config 结构体
-        let config = Config {
+        let mut config = Config {
             is_primary: config_file.is_primary,
             restart_duration_secs: config_file.restart_duration_secs,
             snapshot_requery_time: config_file.snapshot_requery_time,
@@ -157,6 +161,7 @@ impl Config {
             symbol_snapshot_dir,
             exchange, // 从命令行参数设置
             binance: config_file.binance,
+            binance_spot: config_file.binance_spot,
             binance_futures: config_file.binance_futures,
             binance_rest: config_file.binance_rest.unwrap_or_else(|| BinanceRestCfg {
                 binance_url: String::new(),
@@ -168,12 +173,17 @@ impl Config {
             bybit_spot: config_file.bybit_spot,
         };
 
+        if matches!(config.exchange, Exchange::BinanceSpot) {
+            config.is_primary = false;
+        }
+
         Ok(config)
     }
 
     pub fn get_exchange(&self) -> String {
         match self.exchange {
             Exchange::Binance => "binance".to_string(),
+            Exchange::BinanceSpot => "binance-spot".to_string(),
             Exchange::BinanceFutures => "binance-futures".to_string(),
             Exchange::Okex => "okex".to_string(),
             Exchange::OkexSwap => "okex-swap".to_string(),
@@ -186,6 +196,7 @@ impl Config {
         match self.exchange {
             Exchange::BinanceFutures => 50,
             Exchange::Binance => 100,
+            Exchange::BinanceSpot => 100,
             Exchange::OkexSwap => 50, // 减少批次大小避免订阅过多被拒绝
             Exchange::Okex => 50,
             Exchange::Bybit => 300,
@@ -197,6 +208,7 @@ impl Config {
         match self.exchange {
             Exchange::BinanceFutures => self.binance_futures.clone(),
             Exchange::Binance => self.binance.clone(),
+            Exchange::BinanceSpot => self.binance_spot.clone(),
             Exchange::OkexSwap => self.okex_swap.clone(),
             Exchange::Okex => self.okex.clone(),
             Exchange::Bybit => self.bybit.clone(),
@@ -403,7 +415,7 @@ impl Config {
                 Self::get_symbol_for_binance_futures(&self.symbol_socket).await?
             }
             //币安u本位期货合约对应的现货
-            Exchange::Binance => {
+            Exchange::Binance | Exchange::BinanceSpot => {
                 Self::get_spot_symbols_related_to_binance_futures(&self.symbol_socket).await?
             }
             //OKEXu本位期货合约

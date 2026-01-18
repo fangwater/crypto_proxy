@@ -158,7 +158,7 @@ impl CryptoProxyApp {
                 // 启动完整的 REST Fetcher（包含 REST 请求 + closebar）
                 self.start_rest_fetcher();
             }
-            "binance" => {
+            "binance" | "binance-spot" => {
                 // 启动轻量级的 Bar Close Timer（仅 closebar）
                 self.start_bar_close_timer();
             }

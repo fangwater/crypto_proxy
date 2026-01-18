@@ -20,6 +20,9 @@ use tokio::sync::OnceCell;
 #[serde(rename_all = "kebab-case")]
 enum Exchange {
     Binance,
+    #[value(name = "binance-spot")]
+    #[serde(rename = "binance-spot")]
+    BinanceSpot,
     #[value(name = "binance-futures")]
     #[serde(rename = "binance-futures")]
     BinanceFutures,
@@ -72,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     match exchange {
-        Exchange::Binance | Exchange::BinanceFutures => {
+        Exchange::Binance | Exchange::BinanceSpot | Exchange::BinanceFutures => {
             let spot_url = binance_url.ok_or_else(|| {
                 anyhow::anyhow!("--binance-url must be provided for binance exchanges")
             })?;

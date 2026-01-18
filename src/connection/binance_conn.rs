@@ -125,14 +125,42 @@ impl MktConnectionRunner for BinanceConnection {
 #[async_trait]
 impl MktConnectionHandler for BinanceConnection {
     async fn start_ws(&mut self) -> anyhow::Result<()> {
+        let use_sbe = self
+            .base_connection
+            .url
+            .contains("stream-sbe.binance.com");
+        let api_key = if use_sbe {
+            std::env::var("BINANCE_SBE_API_KEY")
+                .or_else(|_| std::env::var("BINANCE_API_KEY"))
+                .ok()
+        } else {
+            None
+        };
+        if use_sbe && api_key.is_none() {
+            return Err(anyhow::anyhow!(
+                "BINANCE_SBE_API_KEY or BINANCE_API_KEY not set for SBE connection"
+            ));
+        }
+        let headers = api_key.map(|key| vec![("X-MBX-APIKEY".to_string(), key)]);
+
         loop {
-            match WsConnector::connect(
-                &self.base_connection.url,
-                &self.base_connection.sub_msg,
-                &self.base_connection.connection_name,
-            )
-            .await
-            {
+            let connect_result = if let Some(ref header_pairs) = headers {
+                WsConnector::connect_with_headers(
+                    &self.base_connection.url,
+                    &self.base_connection.sub_msg,
+                    &self.base_connection.connection_name,
+                    header_pairs,
+                )
+                .await
+            } else {
+                WsConnector::connect(
+                    &self.base_connection.url,
+                    &self.base_connection.sub_msg,
+                    &self.base_connection.connection_name,
+                )
+                .await
+            };
+            match connect_result {
                 Ok(connection) => {
                     info!(
                         "[{}] successfully connected at {:?}",
@@ -191,7 +219,7 @@ impl BinanceFuturesSnapshotQuery {
         }
 
         let url = match exchange {
-            "binance" => rest_cfg.spot_depth_url(),
+            "binance" | "binance-spot" => rest_cfg.spot_depth_url(),
             "binance-futures" => rest_cfg.futures_depth_url(),
             _ => return Err(anyhow::anyhow!("Invalid exchange: {}", exchange)),
         };

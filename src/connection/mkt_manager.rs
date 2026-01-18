@@ -3,7 +3,8 @@ use crate::connection::binance_conn::BinanceFuturesSnapshotQuery;
 use crate::connection::connection::construct_connection;
 use crate::mkt_msg::{SignalMsg, SignalSource};
 use crate::parser::binance_parser::{
-    BinanceIncParser, BinanceSignalParser, BinanceSnapshotParser, BinanceTradeParser,
+    BinanceIncParser, BinanceSbeIncParser, BinanceSbeTradeParser, BinanceSignalParser,
+    BinanceSnapshotParser, BinanceTradeParser,
 };
 use crate::parser::bybit_parser::{BybitIncParser, BybitSignalParser, BybitTradeParser};
 use crate::parser::default_parser::Parser;
@@ -213,12 +214,12 @@ impl MktDataConnectionManager {
         // 1. 启动所有增量连接
         for i in 0..self.subscribe_msgs.get_inc_subscribe_msg_len() {
             let exchange = self.cfg.get_exchange().clone();
-            let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
             let subscribe_msg = self.subscribe_msgs.get_inc_subscribe_msg(i).clone();
 
             // Create inc parser based on exchange (static dispatch for performance)
             match exchange.as_str() {
                 "binance-futures" => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BinanceIncParser::new(true);
                     self.spawn_mkt_connection_typed(
                         exchange,
@@ -230,6 +231,7 @@ impl MktDataConnectionManager {
                     .await;
                 }
                 "binance" => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BinanceIncParser::new(false);
                     self.spawn_mkt_connection_typed(
                         exchange,
@@ -240,7 +242,20 @@ impl MktDataConnectionManager {
                     )
                     .await;
                 }
+                "binance-spot" => {
+                    let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
+                    let parser = BinanceSbeIncParser::new();
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("sbe inc msg batch {}", i),
+                        parser,
+                    )
+                    .await;
+                }
                 "bybit" | "bybit-spot" => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BybitIncParser::new();
                     self.spawn_mkt_connection_typed(
                         exchange,
@@ -252,6 +267,7 @@ impl MktDataConnectionManager {
                     .await;
                 }
                 "okex-swap" | "okex" => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = OkexIncParser::new();
                     self.spawn_mkt_connection_typed(
                         exchange,
@@ -271,12 +287,12 @@ impl MktDataConnectionManager {
         // 2. 启动所有交易连接
         for i in 0..self.subscribe_msgs.get_trade_subscribe_msg_len() {
             let exchange = self.cfg.get_exchange().clone();
-            let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
             let subscribe_msg = self.subscribe_msgs.get_trade_subscribe_msg(i).clone();
 
             // Create trade parser based on exchange (static dispatch for performance)
             match exchange.as_str() {
                 "binance-futures" | "binance" => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BinanceTradeParser::new();
                     self.spawn_mkt_connection_typed(
                         exchange,
@@ -287,7 +303,20 @@ impl MktDataConnectionManager {
                     )
                     .await;
                 }
+                "binance-spot" => {
+                    let url = "wss://stream-sbe.binance.com:9443/ws".to_string();
+                    let parser = BinanceSbeTradeParser::new();
+                    self.spawn_mkt_connection_typed(
+                        exchange,
+                        url,
+                        subscribe_msg,
+                        format!("sbe trade msg batch {}", i),
+                        parser,
+                    )
+                    .await;
+                }
                 "bybit" | "bybit-spot" => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = BybitTradeParser::new();
                     self.spawn_mkt_connection_typed(
                         exchange,
@@ -299,6 +328,7 @@ impl MktDataConnectionManager {
                     .await;
                 }
                 "okex-swap" | "okex" => {
+                    let url = SubscribeMsgs::get_exchange_mkt_data_url(&exchange).to_string();
                     let parser = OkexTradeParser::new();
                     self.spawn_mkt_connection_typed(
                         exchange,
@@ -327,7 +357,9 @@ impl MktDataConnectionManager {
 
         // Create signal parser based on exchange
         let signal_parser: Box<dyn Parser> = match exchange.as_str() {
-            "binance-futures" | "binance" => Box::new(BinanceSignalParser::new(false)),
+            "binance-futures" | "binance" | "binance-spot" => {
+                Box::new(BinanceSignalParser::new(false))
+            }
             "okex-swap" | "okex" => Box::new(OkexSignalParser::new(false)),
             "bybit" | "bybit-spot" => Box::new(BybitSignalParser::new(false)),
             _ => {
