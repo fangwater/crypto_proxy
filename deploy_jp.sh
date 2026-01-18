@@ -101,10 +101,10 @@ for server_config in "${SERVERS[@]}"; do
     
     if [ "$DEPLOY_MODE" != "bin_only" ]; then
         # 部署脚本文件
-        scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh $user@$ip:$exec_dir/
+        scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh start_binance_spot.sh stop_binance_spot.sh $user@$ip:$exec_dir/
         check_status "复制脚本文件到 $ip"
         
-        ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh"
+        ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh $exec_dir/start_binance_spot.sh $exec_dir/stop_binance_spot.sh"
         check_status "设置 $ip 上的脚本文件权限"
     else
         log "跳过服务器 $ip 的启动/停止脚本同步"
@@ -114,7 +114,6 @@ for server_config in "${SERVERS[@]}"; do
 done
 
 log "所有服务器部署完成！"
-
 
 
 
