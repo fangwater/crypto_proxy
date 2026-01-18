@@ -12,10 +12,10 @@ exchange=""
 
 usage() {
     cat <<USAGE
-用法: $(basename "$0") --side primary|secondary <exchange>
+用法: $(basename "$0") [--side primary|secondary] <exchange>
 
 参数:
-  --side        选择网关分区: primary 或 secondary
+  --side        选择网关分区: primary 或 secondary（仅 binance 需要）
 
 示例:
   $(basename "$0") --side primary binance
@@ -63,31 +63,46 @@ if [ -z "$exchange" ]; then
     exit 1
 fi
 
-if [ -z "$side" ]; then
-    echo "请提供 --side 参数"
-    usage
-    exit 1
-fi
-
-side="${side,,}"
-case "$side" in
-    primary)
-        BINANCE_GATEWAY_HOST="192.168.1.198"
-        ;;
-    secondary)
-        BINANCE_GATEWAY_HOST="192.168.1.55"
-        ;;
-    *)
-        echo "无效的 --side 参数: $side"
-        usage
-        exit 1
-        ;;
-esac
-
 if ! echo "${exchange_list[@]}" | grep -wq "$exchange"; then
     echo "无效的交易所名称: $exchange"
     echo "支持的交易所: ${exchange_list[*]}"
     exit 1
+fi
+
+if [ "$exchange" = "binance" ]; then
+    if [ -z "$side" ]; then
+        echo "请提供 --side 参数"
+        usage
+        exit 1
+    fi
+
+    side="${side,,}"
+    case "$side" in
+        primary)
+            BINANCE_GATEWAY_HOST="192.168.1.198"
+            ;;
+        secondary)
+            BINANCE_GATEWAY_HOST="192.168.1.55"
+            ;;
+        *)
+            echo "无效的 --side 参数: $side"
+            usage
+            exit 1
+            ;;
+    esac
+else
+    if [ -n "$side" ]; then
+        side="${side,,}"
+        case "$side" in
+            primary|secondary)
+                ;;
+            *)
+                echo "无效的 --side 参数: $side"
+                usage
+                exit 1
+                ;;
+        esac
+    fi
 fi
 
 # 根据交易所获取对应的合约和现货配置
@@ -148,7 +163,9 @@ start_exchange_proxies() {
 
     echo "开始启动 ${exchange} 交易所的代理服务..."
     echo "将启动以下配置: $configs"
-    echo "使用网关: ${BINANCE_GATEWAY_HOST} (side: ${side})"
+    if [ "$exchange" = "binance" ]; then
+        echo "使用网关: ${BINANCE_GATEWAY_HOST} (side: ${side})"
+    fi
     echo ""
 
     for config in $configs; do

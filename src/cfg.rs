@@ -173,10 +173,6 @@ impl Config {
             bybit_spot: config_file.bybit_spot,
         };
 
-        if matches!(config.exchange, Exchange::BinanceSpot) {
-            config.is_primary = false;
-        }
-
         Ok(config)
     }
 

@@ -201,6 +201,7 @@ impl BinanceFuturesSnapshotQuery {
                                                               // https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book
                                                               // 1000档的请求消耗Weight为50 每秒有1000的配额，对应20次请求次数
     const COOLDOWN: Duration = Duration::from_secs(60); // 请求间隔时间(币安服务端限制请求频率)
+    const BINANCE_SPOT_SNAPSHOT_ENABLED: bool = false; // TODO: 临时关闭 binance-spot 快照
 
     async fn fetch_symbol_depth(
         exchange: &str,
@@ -313,6 +314,11 @@ impl BinanceFuturesSnapshotQuery {
         symbols: Vec<String>,
         tx: tokio::sync::broadcast::Sender<Bytes>,
     ) {
+        if exchange == "binance-spot" && !Self::BINANCE_SPOT_SNAPSHOT_ENABLED {
+            log::info!("Skip depth snapshot for binance-spot (temporary disabled)");
+            return;
+        }
+
         let client = Client::builder()
             .timeout(Self::REQUEST_TIMEOUT)
             .build()
