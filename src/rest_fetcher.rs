@@ -12,7 +12,7 @@ use bytes::Bytes;
 use ed25519_dalek::{Signer, SigningKey};
 use flate2::read::GzDecoder;
 use log::{error, info, warn};
-use pkcs8::{DecodePrivateKey, EncryptedPrivateKeyDocument, PrivateKeyDocument};
+use pkcs8::DecodePrivateKey;
 use prost::Message;
 use reqwest::{
     header::{CONTENT_ENCODING, CONTENT_TYPE},
@@ -251,17 +251,10 @@ fn load_binance_ed25519_key() -> Result<SigningKey, FetchError> {
         let password = std::env::var("BINANCE_PRIVATE_KEY_PASSWORD").map_err(|_| {
             FetchError::Request("BINANCE_PRIVATE_KEY_PASSWORD not set".to_string())
         })?;
-        let encrypted = EncryptedPrivateKeyDocument::from_pem(pem.as_str())
-            .map_err(|e| FetchError::Request(format!("invalid encrypted private key: {}", e)))?;
-        let decrypted = encrypted
-            .decrypt(password.as_str())
-            .map_err(|e| FetchError::Request(format!("decrypt private key failed: {}", e)))?;
-        SigningKey::from_pkcs8_der(decrypted.as_bytes())
+        SigningKey::from_pkcs8_encrypted_pem(pem.as_str(), password.as_str())
             .map_err(|e| FetchError::Request(format!("load private key failed: {}", e)))
     } else {
-        let doc = PrivateKeyDocument::from_pem(pem.as_str())
-            .map_err(|e| FetchError::Request(format!("invalid private key: {}", e)))?;
-        SigningKey::from_pkcs8_der(doc.as_bytes())
+        SigningKey::from_pkcs8_pem(pem.as_str())
             .map_err(|e| FetchError::Request(format!("load private key failed: {}", e)))
     }
 }

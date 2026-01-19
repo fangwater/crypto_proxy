@@ -31,14 +31,20 @@ DEPLOY_MODE=${DEPLOY_MODE:-full}
 # 服务器配置
 # 格式: "IP:角色" (角色: primary 或 secondary)
 SERVERS=(
-    # "103.90.136.194:primary"
-    # "103.90.136.195:secondary"
+
+    "103.90.136.194:primary"
+    "103.90.136.195:secondary"
+    
     # "156.231.137.90:primary"
     # "156.231.137.91:secondary"
+
+    # binance-spot okex
     # "103.90.136.196:primary"
     # "103.90.136.197:secondary"
-    "156.231.137.92:primary",
-    "156.231.137.188:secondary"
+    
+    # binance-spot okex  
+    # "156.231.137.92:primary",
+    # "156.231.137.188:secondary"
 )
 
 user=el01
