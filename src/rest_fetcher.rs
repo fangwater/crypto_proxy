@@ -6,10 +6,14 @@
 //! - 每分钟请求：PremiumIndex, OpenInterest
 //! - 每5分钟请求：TopAccount, TopPosition, GlobalAccount, OpenInterestHist
 
+use base64::engine::general_purpose;
+use base64::Engine as _;
 use bytes::Bytes;
-use log::{error, info, warn};
-use prost::Message;
+use ed25519_dalek::{Signer, SigningKey};
 use flate2::read::GzDecoder;
+use log::{error, info, warn};
+use pkcs8::{DecodePrivateKey, EncryptedPrivateKeyDocument, PrivateKeyDocument};
+use prost::Message;
 use reqwest::{
     header::{CONTENT_ENCODING, CONTENT_TYPE},
     Client,
@@ -19,9 +23,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
+use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tokio::time::{sleep_until, Instant};
+use url::form_urlencoded;
 
 use crate::mkt_msg::{
     BarClose1mMsg,
@@ -39,7 +45,8 @@ const ONE_MINUTE_MILLIS: i64 = 60_000;
 const FIVE_MINUTE_MILLIS: i64 = 5 * ONE_MINUTE_MILLIS;
 const REST_MONITOR_TAG: &str = "[REST-MON]";
 const BAPI_BORROW_REPAY_PATH: &str = "bapi/margin/v1/public/margin/statistics/24h-borrow-and-repay";
-const BAPI_AVAILABLE_INVENTORY_PATH: &str = "bapi/margin/v1/public/margin/marketStats/available-inventory";
+const SAPI_BASE_URL: &str = "https://api.binance.com";
+const SAPI_AVAILABLE_INVENTORY_PATH: &str = "sapi/v1/margin/available-inventory";
 
 /// 请求超时时间
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -227,6 +234,43 @@ fn body_preview(body: &str) -> String {
     preview
 }
 
+fn build_query_string(params: &[(&str, &str)]) -> String {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.extend_pairs(params);
+    serializer.finish()
+}
+
+fn load_binance_ed25519_key() -> Result<SigningKey, FetchError> {
+    let key_path = std::env::var("BINANCE_PRIVATE_KEY_PATH").map_err(|_| {
+        FetchError::Request("BINANCE_PRIVATE_KEY_PATH not set".to_string())
+    })?;
+    let pem = fs::read_to_string(&key_path)
+        .map_err(|e| FetchError::Request(format!("read private key failed: {}", e)))?;
+
+    if pem.contains("ENCRYPTED PRIVATE KEY") {
+        let password = std::env::var("BINANCE_PRIVATE_KEY_PASSWORD").map_err(|_| {
+            FetchError::Request("BINANCE_PRIVATE_KEY_PASSWORD not set".to_string())
+        })?;
+        let encrypted = EncryptedPrivateKeyDocument::from_pem(pem.as_str())
+            .map_err(|e| FetchError::Request(format!("invalid encrypted private key: {}", e)))?;
+        let decrypted = encrypted
+            .decrypt(password.as_str())
+            .map_err(|e| FetchError::Request(format!("decrypt private key failed: {}", e)))?;
+        SigningKey::from_pkcs8_der(decrypted.as_bytes())
+            .map_err(|e| FetchError::Request(format!("load private key failed: {}", e)))
+    } else {
+        let doc = PrivateKeyDocument::from_pem(pem.as_str())
+            .map_err(|e| FetchError::Request(format!("invalid private key: {}", e)))?;
+        SigningKey::from_pkcs8_der(doc.as_bytes())
+            .map_err(|e| FetchError::Request(format!("load private key failed: {}", e)))
+    }
+}
+
+fn sign_payload_ed25519(payload: &str, signing_key: &SigningKey) -> String {
+    let signature = signing_key.sign(payload.as_bytes());
+    general_purpose::STANDARD.encode(signature.to_bytes())
+}
+
 fn normalize_timestamp_millis(ts: i64) -> i64 {
     if ts > 0 && ts < 1_000_000_000_000 {
         ts * 1000
@@ -350,6 +394,7 @@ async fn fetch_with_retry(
     client: &Client,
     url: &str,
     params: &[(&str, &str)],
+    headers: &[(&str, &str)],
     label: &str,
     symbol: &str,
 ) -> Result<String, FetchError> {
@@ -361,12 +406,11 @@ async fn fetch_with_retry(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        let result = client
-            .get(url)
-            .query(params)
-            .timeout(REQUEST_TIMEOUT)
-            .send()
-            .await;
+        let mut request = client.get(url).query(params).timeout(REQUEST_TIMEOUT);
+        for (key, value) in headers {
+            request = request.header(*key, *value);
+        }
+        let result = request.send().await;
 
         match result {
             Ok(response) => {
@@ -478,7 +522,45 @@ async fn fetch_bapi_endpoint(
     label: &str,
 ) -> Result<String, FetchError> {
     let url = join_url(base_url, path);
-    fetch_with_retry(client, &url, &[], label, "bapi").await
+    fetch_with_retry(client, &url, &[], &[], label, "bapi").await
+}
+
+async fn fetch_sapi_available_inventory(client: &Client) -> Result<String, FetchError> {
+    let api_key = std::env::var("BINANCE_API_KEY")
+        .map_err(|_| FetchError::Request("BINANCE_API_KEY not set".to_string()))?;
+    let signing_key = load_binance_ed25519_key()?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| FetchError::Request(format!("clock error: {}", e)))?
+        .as_millis()
+        .to_string();
+    let recv_window = "5000".to_string();
+    let margin_type = "margin".to_string();
+
+    let query_params = vec![
+        ("type", margin_type.as_str()),
+        ("timestamp", timestamp.as_str()),
+        ("recvWindow", recv_window.as_str()),
+    ];
+    let payload = build_query_string(&query_params);
+    let signature = sign_payload_ed25519(&payload, &signing_key);
+    let signed_params = vec![
+        ("type", margin_type.as_str()),
+        ("timestamp", timestamp.as_str()),
+        ("recvWindow", recv_window.as_str()),
+        ("signature", signature.as_str()),
+    ];
+
+    let url = join_url(SAPI_BASE_URL, SAPI_AVAILABLE_INVENTORY_PATH);
+    fetch_with_retry(
+        client,
+        &url,
+        &signed_params,
+        &[("X-MBX-APIKEY", api_key.as_str())],
+        "SapiAvailableInventory",
+        "sapi",
+    )
+    .await
 }
 
 /// 获取 Premium Index Klines
@@ -493,6 +575,7 @@ async fn fetch_premium_index(
         client,
         &url,
         &[("symbol", symbol), ("interval", "1m"), ("limit", "2")],
+        &[],
         "PremiumIndex",
         symbol,
     )
@@ -577,7 +660,7 @@ async fn fetch_open_interest(
 ) -> Result<OpenInterestData, FetchError> {
     let url = format!("{}/fapi/v1/openInterest", base_url);
     let body =
-        fetch_with_retry(client, &url, &[("symbol", symbol)], "OpenInterest", symbol).await?;
+        fetch_with_retry(client, &url, &[("symbol", symbol)], &[], "OpenInterest", symbol).await?;
 
     let json: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| FetchError::Json(e.to_string()))?;
@@ -619,6 +702,7 @@ async fn fetch_ratio_metrics(
         client,
         &url,
         &[("symbol", symbol), ("period", "5m"), ("limit", "2")],
+        &[],
         label,
         symbol,
     )
@@ -688,6 +772,7 @@ async fn fetch_open_interest_hist(
         client,
         &url,
         &[("symbol", symbol), ("period", "5m"), ("limit", "2")],
+        &[],
         "OpenInterestHist",
         symbol,
     )
@@ -843,12 +928,7 @@ impl BinanceRestFetcher {
             BAPI_BORROW_REPAY_PATH,
             "BapiBorrowRepay",
         );
-        let bapi_inventory_future = fetch_bapi_endpoint(
-            &bapi_client,
-            &bapi_base_url,
-            BAPI_AVAILABLE_INVENTORY_PATH,
-            "BapiAvailableInventory",
-        );
+        let bapi_inventory_future = fetch_sapi_available_inventory(&bapi_client);
 
         // 等待所有请求完成
         let (premium_results, oi_results, bapi_borrow_repay, bapi_available_inventory) = tokio::join!(

@@ -20,6 +20,9 @@ futures = "0.3"
 bytes = "1.0"
 chrono = "0.4"
 async-trait = "0.1"
+base64 = "0.22"
+ed25519-dalek = { version = "2.1.1", features = ["pkcs8"] }
+pkcs8 = { version = "0.10", features = ["pem", "encryption"] }
 zeromq = "0.4.1"
 zmq = "0.10.0"
 uuid = "1.17.0"
