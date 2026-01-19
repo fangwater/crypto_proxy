@@ -1226,8 +1226,8 @@ fn print_five_minute_summary(result: &FiveMinuteResult) {
 }
 
 struct BinanceMktStatusPayload {
-    calculation_time: i64,
-    update_time: i64,
+    period: i64,
+    info_count: i64,
     payload: Bytes,
 }
 
@@ -1340,6 +1340,7 @@ fn build_binance_mkt_status_payload(
     let update_time = inventory_resp.data.update_time;
     let last_time = calculation_time.max(update_time);
 
+    let info_count = borrow_statuses.len() as i64;
     let status = BinanceMktStatus {
         last_calculation_time: last_time,
         borrow_statuses,
@@ -1349,8 +1350,8 @@ fn build_binance_mkt_status_payload(
 
     let payload = status.encode_to_vec();
     Ok(BinanceMktStatusPayload {
-        calculation_time,
-        update_time,
+        period,
+        info_count,
         payload: Bytes::from(payload),
     })
 }
@@ -1566,8 +1567,8 @@ fn send_binance_mkt_status_message(
     match build_binance_mkt_status_payload(borrow_resp, inventory_resp, period) {
         Ok(payload) => {
             let msg = BinanceMktStatusMsg::create(
-                payload.calculation_time,
-                payload.update_time,
+                payload.period,
+                payload.info_count,
                 payload.payload,
             );
             if let Err(e) = sender.send(msg.to_bytes()) {

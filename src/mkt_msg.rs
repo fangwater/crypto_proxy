@@ -68,19 +68,19 @@ impl BarClose1mMsg {
 
 pub struct BinanceMktStatusMsg {
     pub msg_type: MktMsgType,
-    pub calculation_time: i64,
-    pub update_time: i64,
+    pub period: i64,
+    pub info_count: i64,
     pub payload_length: u32,
     pub payload: Bytes,
 }
 
 impl BinanceMktStatusMsg {
-    pub fn create(calculation_time: i64, update_time: i64, payload: Bytes) -> Self {
+    pub fn create(period: i64, info_count: i64, payload: Bytes) -> Self {
         let payload_length = payload.len() as u32;
         Self {
             msg_type: MktMsgType::BinanceMktStatus,
-            calculation_time,
-            update_time,
+            period,
+            info_count,
             payload_length,
             payload,
         }
@@ -90,8 +90,8 @@ impl BinanceMktStatusMsg {
         let total_size = 4 + 8 + 8 + 4 + self.payload_length as usize;
         let mut buf = BytesMut::with_capacity(total_size);
         buf.put_u32_le(self.msg_type as u32);
-        buf.put_i64_le(self.calculation_time);
-        buf.put_i64_le(self.update_time);
+        buf.put_i64_le(self.period);
+        buf.put_i64_le(self.info_count);
         buf.put_u32_le(self.payload_length);
         buf.put(self.payload.as_ref());
         buf.freeze()

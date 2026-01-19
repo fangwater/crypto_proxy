@@ -579,7 +579,8 @@ impl BinanceSbeIncParser {
             return 0;
         }
 
-        let event_time = match read_i64_le(msg, base) {
+        // Use transactTime (field id=2) for trade timestamp.
+        let transact_time = match read_i64_le(msg, base + 8) {
             Some(v) => v,
             None => return 0,
         };
@@ -619,7 +620,7 @@ impl BinanceSbeIncParser {
             None => return 0,
         };
 
-        let timestamp = event_time / 1000;
+        let timestamp = transact_time / 1000;
         let mut parsed_count = 0;
 
         let seq_msg = BinanceIncSeqNoMsg::create(
