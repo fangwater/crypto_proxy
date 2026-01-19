@@ -86,7 +86,7 @@ for server_config in "${SERVERS[@]}"; do
     check_status "设置 $ip 上的二进制文件权限"
     
     # 部署脚本文件
-    scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh start_binance_spot.sh stop_binance_spot.sh $user@$ip:$exec_dir/
+    scp -o ConnectTimeout=$SSH_TIMEOUT start_proxy.sh stop_proxy.sh start_binance_spot.sh stop_binance_spot.sh env.sh mkt.pem $user@$ip:$exec_dir/
     check_status "复制脚本文件到 $ip"
     
     ssh -o ConnectTimeout=$SSH_TIMEOUT $user@$ip "chmod +x $exec_dir/start_proxy.sh $exec_dir/stop_proxy.sh $exec_dir/start_binance_spot.sh $exec_dir/stop_binance_spot.sh"
@@ -96,8 +96,6 @@ for server_config in "${SERVERS[@]}"; do
 done
 
 log "所有服务器部署完成！"
-
-
 
 
 

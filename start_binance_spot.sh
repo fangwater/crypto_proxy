@@ -1,5 +1,16 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/env.sh"
+
+if [ -f "$ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+else
+    echo "未找到 env.sh: $ENV_FILE"
+    exit 1
+fi
+
 side=""
 
 usage() {

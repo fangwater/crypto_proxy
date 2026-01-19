@@ -1,5 +1,8 @@
 #!/bin/bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/env.sh"
+
 # 候选的exchange list
 exchange_list=(
     "binance"
@@ -20,6 +23,16 @@ usage() {
 示例:
   $(basename "$0") --side primary binance
 USAGE
+}
+
+load_binance_env() {
+    if [ -f "$ENV_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+    else
+        echo "未找到 env.sh: $ENV_FILE"
+        exit 1
+    fi
 }
 
 while [ $# -gt 0 ]; do
@@ -103,6 +116,10 @@ else
                 ;;
         esac
     fi
+fi
+
+if [ "$exchange" = "binance" ]; then
+    load_binance_env
 fi
 
 # 根据交易所获取对应的合约和现货配置
