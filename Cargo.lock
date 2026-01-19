@@ -1611,6 +1611,7 @@ dependencies = [
  "der",
  "pbkdf2",
  "scrypt",
+ "sha1",
  "sha2",
  "spki",
 ]

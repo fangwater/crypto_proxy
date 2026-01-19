@@ -179,22 +179,24 @@ struct BapiBorrowCoin {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BapiAvailableInventoryResponse {
-    data: BapiAvailableInventoryData,
+struct SapiAvailableInventoryResponse {
+    #[serde(flatten)]
+    data: SapiAvailableInventoryData,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BapiAvailableInventoryData {
+struct SapiAvailableInventoryData {
+    #[serde(deserialize_with = "deserialize_assets_map")]
     assets: HashMap<String, f64>,
     #[serde(deserialize_with = "deserialize_i64_from_string_or_number")]
     update_time: i64,
 }
 
 #[derive(Debug, Default)]
-struct BapiMktStatusCache {
+struct BinanceMktStatusCache {
     borrow: Option<BapiBorrowRepayResponse>,
-    inventory: Option<BapiAvailableInventoryResponse>,
+    inventory: Option<SapiAvailableInventoryResponse>,
 }
 
 // ============================================================================
@@ -270,6 +272,25 @@ fn normalize_timestamp_millis(ts: i64) -> i64 {
     } else {
         ts
     }
+}
+
+fn deserialize_assets_map<'de, D>(deserializer: D) -> Result<HashMap<String, f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let mut parsed = HashMap::with_capacity(raw.len());
+    for (asset, value) in raw {
+        let amount = if let Some(num) = value.as_f64() {
+            num
+        } else if let Some(text) = value.as_str() {
+            text.parse::<f64>().map_err(de::Error::custom)?
+        } else {
+            return Err(de::Error::custom("invalid asset value"));
+        };
+        parsed.insert(asset, amount);
+    }
+    Ok(parsed)
 }
 
 fn calc_period(tp_ms: i64) -> i64 {
@@ -1137,7 +1158,7 @@ fn print_one_minute_summary(result: &OneMinuteResult) {
     let bapi_inventory_ok = result.bapi_available_inventory.is_ok();
 
     info!(
-        "{REST_MONITOR_TAG} [1min Summary] close_time={} | PremiumIndex: {}/{} success | OpenInterest: {}/{} success | BAPI BorrowRepay: {} | BAPI Inventory: {}",
+        "{REST_MONITOR_TAG} [1min Summary] close_time={} | PremiumIndex: {}/{} success | OpenInterest: {}/{} success | BAPI BorrowRepay: {} | SAPI Inventory: {}",
         result.close_time,
         pi_success,
         result.premium_index.len(),
@@ -1181,7 +1202,7 @@ fn print_one_minute_summary(result: &OneMinuteResult) {
         warn!("{REST_MONITOR_TAG}   BAPI BorrowRepay failed: {}", e.detail());
     }
     if let Err(e) = &result.bapi_available_inventory {
-        warn!("{REST_MONITOR_TAG}   BAPI Inventory failed: {}", e.detail());
+        warn!("{REST_MONITOR_TAG}   SAPI Inventory failed: {}", e.detail());
     }
 }
 
@@ -1211,7 +1232,7 @@ struct BinanceMktStatusPayload {
 }
 
 fn update_bapi_borrow_cache(
-    cache: &mut BapiMktStatusCache,
+    cache: &mut BinanceMktStatusCache,
     body: &str,
 ) -> Result<(), FetchError> {
     let mut parsed: BapiBorrowRepayResponse = serde_json::from_str(body).map_err(|e| {
@@ -1239,13 +1260,13 @@ fn update_bapi_borrow_cache(
     Ok(())
 }
 
-fn update_bapi_inventory_cache(
-    cache: &mut BapiMktStatusCache,
+fn update_sapi_inventory_cache(
+    cache: &mut BinanceMktStatusCache,
     body: &str,
 ) -> Result<(), FetchError> {
-    let mut parsed: BapiAvailableInventoryResponse = serde_json::from_str(body).map_err(|e| {
+    let mut parsed: SapiAvailableInventoryResponse = serde_json::from_str(body).map_err(|e| {
         warn!(
-            "{REST_MONITOR_TAG} BAPI Inventory JSON parse failed: {} | body_len={} | body=\"{}\"",
+            "{REST_MONITOR_TAG} SAPI Inventory JSON parse failed: {} | body_len={} | body=\"{}\"",
             e,
             body.len(),
             body_preview(body)
@@ -1268,7 +1289,7 @@ fn update_bapi_inventory_cache(
         let old_time = old.data.update_time;
         if new_time < old_time {
             warn!(
-                "{REST_MONITOR_TAG} BAPI Inventory time rollback: new={} old={}",
+                "{REST_MONITOR_TAG} SAPI Inventory time rollback: new={} old={}",
                 new_time, old_time
             );
             return Ok(());
@@ -1280,7 +1301,7 @@ fn update_bapi_inventory_cache(
 
 fn build_binance_mkt_status_payload(
     borrow_resp: &BapiBorrowRepayResponse,
-    inventory_resp: &BapiAvailableInventoryResponse,
+    inventory_resp: &SapiAvailableInventoryResponse,
     period: i64,
 ) -> Result<BinanceMktStatusPayload, FetchError> {
     let mut status_map: HashMap<String, BorrowStatus> = HashMap::new();
@@ -1367,7 +1388,7 @@ pub async fn run_rest_fetcher_with_sender(
     );
 
     let mut pending_five_min: Option<(i64, Instant)> = None;
-    let mut bapi_cache = BapiMktStatusCache::default();
+    let mut bapi_cache = BinanceMktStatusCache::default();
 
     loop {
         // 等待下一个分钟边界
@@ -1513,7 +1534,7 @@ fn send_one_minute_messages(result: &OneMinuteResult, sender: &broadcast::Sender
 
 fn send_binance_mkt_status_message(
     result: &OneMinuteResult,
-    cache: &mut BapiMktStatusCache,
+    cache: &mut BinanceMktStatusCache,
     sender: &broadcast::Sender<Bytes>,
 ) {
     if let Ok(body) = &result.bapi_borrow_repay {
@@ -1525,9 +1546,9 @@ fn send_binance_mkt_status_message(
         }
     }
     if let Ok(body) = &result.bapi_available_inventory {
-        if let Err(e) = update_bapi_inventory_cache(cache, body) {
+        if let Err(e) = update_sapi_inventory_cache(cache, body) {
             warn!(
-                "{REST_MONITOR_TAG} Failed to parse BAPI Inventory: {}",
+                "{REST_MONITOR_TAG} Failed to parse SAPI Inventory: {}",
                 e.detail()
             );
         }
@@ -1536,7 +1557,7 @@ fn send_binance_mkt_status_message(
     let (borrow_resp, inventory_resp) = match (&cache.borrow, &cache.inventory) {
         (Some(borrow_resp), Some(inventory_resp)) => (borrow_resp, inventory_resp),
         _ => {
-            info!("{REST_MONITOR_TAG} BAPI cache not ready, skip BinanceMktStatus");
+            info!("{REST_MONITOR_TAG} BAPI/SAPI cache not ready, skip BinanceMktStatus");
             return;
         }
     };

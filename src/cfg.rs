@@ -153,7 +153,7 @@ impl Config {
         Self::ensure_snapshot_dir(Path::new(&symbol_snapshot_dir)).await?;
 
         // 构造 Config 结构体
-        let mut config = Config {
+        let config = Config {
             is_primary: config_file.is_primary,
             restart_duration_secs: config_file.restart_duration_secs,
             snapshot_requery_time: config_file.snapshot_requery_time,
