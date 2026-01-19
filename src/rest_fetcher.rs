@@ -1260,6 +1260,16 @@ fn update_bapi_inventory_cache(
         FetchError::Json(e.to_string())
     })?;
     parsed.data.update_time = normalize_timestamp_millis(parsed.data.update_time);
+    {
+        let assets = &parsed.data.assets;
+        let btc = assets.get("BTC").copied().unwrap_or(0.0);
+        let eth = assets.get("ETH").copied().unwrap_or(0.0);
+        let sol = assets.get("SOL").copied().unwrap_or(0.0);
+        info!(
+            "{REST_MONITOR_TAG} SAPI available-inventory BTC={} ETH={} SOL={} update_time={}",
+            btc, eth, sol, parsed.data.update_time
+        );
+    }
     let new_time = parsed.data.update_time;
     if let Some(old) = cache.inventory.as_ref() {
         let old_time = old.data.update_time;
