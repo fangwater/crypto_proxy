@@ -216,13 +216,13 @@ impl BinanceDerivativesMetricsParser {
                 Some(symbol),
                 Some(side),
                 Some(quantity_str),
-                Some(avg_price_str),
+                Some(price_str),
                 Some(timestamp),
             ) = (
                 order_data.get("s").and_then(|v| v.as_str()),
                 order_data.get("S").and_then(|v| v.as_str()),
                 order_data.get("z").and_then(|v| v.as_str()), // Order Filled Accumulated Quantity
-                order_data.get("ap").and_then(|v| v.as_str()), // Average Price
+                order_data.get("p").and_then(|v| v.as_str()), // Price
                 order_data.get("T").and_then(|v| v.as_i64()), // Order Trade Time
             ) {
                 // Check if symbol is in the allowed list (case-insensitive)
@@ -231,8 +231,8 @@ impl BinanceDerivativesMetricsParser {
                     return 0;
                 }
                 // Parse quantity and price
-                if let (Ok(quantity), Ok(avg_price)) =
-                    (quantity_str.parse::<f64>(), avg_price_str.parse::<f64>())
+                if let (Ok(quantity), Ok(price)) =
+                    (quantity_str.parse::<f64>(), price_str.parse::<f64>())
                 {
                     // Convert Binance side to liquidation_side char
                     let liquidation_side = match side {
@@ -246,7 +246,7 @@ impl BinanceDerivativesMetricsParser {
                         symbol.to_string(),
                         liquidation_side,
                         quantity,
-                        avg_price,
+                        price,
                         timestamp,
                     );
 
