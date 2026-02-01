@@ -579,8 +579,8 @@ impl BinanceSbeIncParser {
             return 0;
         }
 
-        // Use transactTime (field id=2) for trade timestamp.
-        let transact_time = match read_i64_le(msg, base + 8) {
+        // Use eventTime (field id=1) for depth diff timestamp.
+        let event_time = match read_i64_le(msg, base) {
             Some(v) => v,
             None => return 0,
         };
@@ -620,7 +620,7 @@ impl BinanceSbeIncParser {
             None => return 0,
         };
 
-        let timestamp = transact_time / 1000;
+        let timestamp = event_time / 1000;
         let mut parsed_count = 0;
 
         let seq_msg = BinanceIncSeqNoMsg::create(
@@ -688,6 +688,10 @@ impl BinanceSbeTradeParser {
             Some(v) => v,
             None => return 0,
         };
+        let transact_time = match read_i64_le(msg, base + 8) {
+            Some(v) => v,
+            None => return 0,
+        };
         let price_exponent = match read_i8(msg, base + 16) {
             Some(v) => v,
             None => return 0,
@@ -738,7 +742,8 @@ impl BinanceSbeTradeParser {
             None => return 0,
         };
 
-        let timestamp = event_time / 1000;
+        let _event_time = event_time; // keep for potential diagnostics
+        let timestamp = transact_time / 1000;
         let mut parsed_count = 0;
 
         for (trade_id, price, qty, is_buyer_maker) in trades {
